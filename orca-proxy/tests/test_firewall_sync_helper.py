@@ -61,6 +61,37 @@ class FakeRunner:
         return SimpleNamespace(returncode=returncode, stdout="", stderr="boom" if returncode else "")
 
 
+class FirewallStateRunner:
+    """Small stateful iptables model for check-before-rebuild tests."""
+
+    def __init__(self, rules_present: bool):
+        self.rules_present = rules_present
+        self.calls: list[list[str]] = []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append(command)
+        if "-C" in command:
+            return SimpleNamespace(
+                returncode=0 if self.rules_present else 1, stdout="", stderr=""
+            )
+        if "-S" in command:
+            chain = command[-1]
+            if not self.rules_present:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            table = "nat" if "nat" in command else "filter"
+            target = "REDIRECT --to-port 8443" if table == "nat" else "DROP"
+            stdout = (
+                f"-N {chain}\n"
+                f"-A {chain} -s 10.0.0.1/32 -p tcp -m tcp --dport 80 -j {target}\n"
+                f"-A {chain} -s 10.0.0.1/32 -p tcp -m tcp --dport 443 -j {target}\n"
+            )
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        # Any mutation represents a successful full rebuild.
+        self.rules_present = True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
 # --- build_commands (pure) ---
 
 
@@ -136,6 +167,29 @@ def test_reconcile_stops_running_commands_after_first_failure():
     helper.reconcile([("vm-a", "10.0.0.1")], "mpqemubr0", 8443, runner=runner)
     total_commands = len(helper.build_commands([("vm-a", "10.0.0.1")], "mpqemubr0", 8443))
     assert len(runner.calls) == 1 < total_commands
+
+
+def test_ensure_reconciled_does_not_mutate_an_intact_firewall():
+    runner = FirewallStateRunner(rules_present=True)
+
+    status = helper.ensure_reconciled(
+        [("vm-a", "10.0.0.1")], "mpqemubr0", 8443, runner=runner
+    )
+
+    assert status == {"vm-a": "in_sync"}
+    assert not any("-F" in command or "-A" in command for command in runner.calls)
+
+
+def test_ensure_reconciled_rebuilds_after_external_hook_deletion():
+    runner = FirewallStateRunner(rules_present=False)
+
+    status = helper.ensure_reconciled(
+        [("vm-a", "10.0.0.1")], "mpqemubr0", 8443, runner=runner
+    )
+
+    assert status == {"vm-a": "in_sync"}
+    assert runner.rules_present is True
+    assert any("-F" in command for command in runner.calls)
 
 
 # --- _list_vms / main (db + argv integration) ---

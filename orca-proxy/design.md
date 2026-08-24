@@ -168,7 +168,12 @@ create/delete:
 
 The unprivileged Management API triggers reconciliation via a sudoers-gated
 helper script (`orca-proxy-firewall-sync`) on every VM create/delete — never
-running as root itself.
+running as root itself. The helper first checks both parent-chain hooks and
+the complete expected per-VM rule set, rebuilding only when that state has
+drifted. The Management API checks rapidly during its startup window and then
+periodically thereafter. This repairs the boot race where Multipass reports
+its systemd service started, then asynchronously rebuilds `mpqemubr0`'s
+firewall and removes the orca-proxy hooks after the initial reconciliation.
 
 **Connection routing (`proxy_addon.py`, `tls_clienthello` hook):** for every
 incoming TLS ClientHello, resolve the VM by source IP, read SNI (if present)

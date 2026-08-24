@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import suppress
 from pathlib import Path
 
 from aiohttp import web
@@ -55,6 +57,27 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
     # /readyz reflects reality immediately rather than reporting a stale
     # "nothing to sync" true from an empty in-memory status.
     firewall_sync.reconcile(vm_count=len(vms_repo.list_all(conn)))
+
+    async def maintain_firewall(_app: web.Application):
+        # Multipass's system service reports started before its asynchronous
+        # bridge/firewall initialization finishes. It can therefore delete
+        # our parent-chain hooks just after the one-shot sync above. Retry
+        # rapidly through that boot window, then keep checking for later
+        # Multipass/firewall reloads. The helper only mutates when its
+        # integrity check finds drift.
+        task = asyncio.create_task(
+            firewall_sync.maintain(lambda: len(vms_repo.list_all(conn))),
+            name="orca-proxy-firewall-maintenance",
+        )
+        _app["firewall_maintenance_task"] = task
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    app.cleanup_ctx.append(maintain_firewall)
 
     app.add_routes(
         [

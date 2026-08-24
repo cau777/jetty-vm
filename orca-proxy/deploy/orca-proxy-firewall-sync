@@ -29,8 +29,9 @@ dependency on anything mutable by the grantee).
 Deliberately narrow: read the VM table, rebuild two iptables chains, print
 a JSON per-VM status map to stdout.
 
-Two dedicated chains, fully rebuilt (flushed + repopulated) on every call --
-never incrementally patched:
+Two dedicated chains, integrity-checked on every call and fully rebuilt
+(flushed + repopulated) whenever they have drifted -- never incrementally
+patched:
 
 - ORCA_PROXY_NAT (nat table, jumped to from PREROUTING): REDIRECTs each
   registered VM's 80/443 to the local proxy port.
@@ -158,6 +159,71 @@ def reconcile(
     return {name: "in_sync" for name, _ in vms}
 
 
+def _rule_count(output: str, chain: str) -> int:
+    """Count rules in ``iptables -S <chain>`` output."""
+    prefix = f"-A {chain} "
+    return sum(1 for line in output.splitlines() if line.startswith(prefix))
+
+
+def is_in_sync(
+    vms: list[tuple[str, str]], bridge: str, proxy_port: int, runner=subprocess.run
+) -> bool:
+    """Check the complete expected firewall state without changing it.
+
+    The rule-count checks catch stale or duplicate entries while the ``-C``
+    checks ensure every expected rule and both parent-chain hooks exist.
+    This makes frequent integrity checks cheap and non-disruptive: a full
+    flush/rebuild only happens after another firewall manager (notably
+    Multipass during boot) actually changes our state.
+    """
+    if not _BRIDGE_NAME_RE.match(bridge):
+        raise ValueError(f"invalid bridge interface name: {bridge!r}")
+
+    checks: list[list[str]] = [
+        ["iptables", "-t", "nat", "-C", "PREROUTING", "-i", bridge, "-j", NAT_CHAIN],
+        ["iptables", "-C", "FORWARD", "-i", bridge, "-j", FILTER_CHAIN],
+    ]
+    for _name, ip in vms:
+        for port in (80, 443):
+            checks.append(
+                [
+                    "iptables", "-t", "nat", "-C", NAT_CHAIN,
+                    "-s", ip, "-p", "tcp", "--dport", str(port),
+                    "-j", "REDIRECT", "--to-port", str(proxy_port),
+                ]
+            )
+            checks.append(
+                [
+                    "iptables", "-C", FILTER_CHAIN,
+                    "-s", ip, "-p", "tcp", "--dport", str(port), "-j", "DROP",
+                ]
+            )
+
+    for command in checks:
+        if runner(command, capture_output=True, text=True).returncode != 0:
+            return False
+
+    expected_per_chain = len(vms) * 2
+    for command, chain in (
+        (["iptables", "-t", "nat", "-S", NAT_CHAIN], NAT_CHAIN),
+        (["iptables", "-S", FILTER_CHAIN], FILTER_CHAIN),
+    ):
+        result = runner(command, capture_output=True, text=True)
+        if result.returncode != 0 or _rule_count(result.stdout, chain) != expected_per_chain:
+            return False
+
+    return True
+
+
+def ensure_reconciled(
+    vms: list[tuple[str, str]], bridge: str, proxy_port: int, runner=subprocess.run
+) -> dict[str, str]:
+    """Return current status, rebuilding only when the integrity check fails."""
+    if is_in_sync(vms, bridge, proxy_port, runner=runner):
+        return {name: "in_sync" for name, _ in vms}
+    return reconcile(vms, bridge, proxy_port, runner=runner)
+
+
 def main(argv: list[str] | None = None, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser(description="Rebuild orca-proxy's per-VM DNAT/DROP rules")
     parser.add_argument("--db", required=True, type=Path, help="path to state.sqlite")
@@ -169,7 +235,7 @@ def main(argv: list[str] | None = None, runner=subprocess.run) -> int:
     vms = _list_vms(conn)
     conn.close()
 
-    status = reconcile(vms, args.bridge, args.proxy_port, runner=runner)
+    status = ensure_reconciled(vms, args.bridge, args.proxy_port, runner=runner)
     print(json.dumps(status))
     return 0 if all(v == "in_sync" for v in status.values()) else 1
 

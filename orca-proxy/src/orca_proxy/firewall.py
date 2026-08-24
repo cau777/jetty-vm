@@ -13,6 +13,7 @@ stdout.
 import asyncio
 import json
 import subprocess
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
@@ -56,6 +57,7 @@ class FirewallSync:
         self._proxy_port = proxy_port
         self._runner = runner
         self._status: dict[str, str] = {}
+        self._async_lock = asyncio.Lock()
         # Tracks whether this process has ever asked the script to populate
         # the chains — NOT whether any VM is registered right now. Needed
         # to distinguish "fresh install, chains never touched, nothing to
@@ -102,8 +104,47 @@ class FirewallSync:
         data plane for the duration of the sudo+iptables round-trip. Offload
         to a thread via run_in_executor so the loop stays responsive.
         """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, partial(self.reconcile, vm_count))
+        # VM CRUD and the maintenance loop can request reconciliation at the
+        # same time. Serialize them so two privileged helpers never flush and
+        # repopulate the same chains concurrently.
+        async with self._async_lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, partial(self.reconcile, vm_count))
+
+    async def maintain(
+        self,
+        vm_count: Callable[[], int],
+        *,
+        startup_attempts: int = 10,
+        startup_interval: float = 1.0,
+        steady_interval: float = 30.0,
+        stop_after: int | None = None,
+    ) -> None:
+        """Continuously repair firewall state after external rewrites.
+
+        Multipass starts in parallel with this user service and rebuilds its
+        bridge firewall asynchronously, after systemd has already considered
+        the Multipass service started. Check rapidly during that boot window,
+        then settle into a slower integrity-check cadence. The privileged
+        helper is check-before-rebuild, so intact rules are never flushed.
+
+        ``stop_after`` bounds the loop for deterministic tests; production
+        callers leave it unset.
+        """
+        completed = 0
+        for _attempt in range(startup_attempts):
+            await self.reconcile_async(vm_count=vm_count())
+            completed += 1
+            if stop_after is not None and completed >= stop_after:
+                return
+            await asyncio.sleep(startup_interval)
+
+        while True:
+            await self.reconcile_async(vm_count=vm_count())
+            completed += 1
+            if stop_after is not None and completed >= stop_after:
+                return
+            await asyncio.sleep(steady_interval)
 
     @property
     def status(self) -> dict[str, str]:

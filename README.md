@@ -47,7 +47,7 @@ curl -fsSL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-ins
 For a reproducible installation, substitute an exact release tag:
 
 ```bash
-curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.0/jetty-install.sh | bash
+curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.1/jetty-install.sh | bash
 ```
 
 The bootstrap verifies and keeps the matching Jetty source under
@@ -57,7 +57,7 @@ the same user-initiated command, add `--with-proxy`; it will request your sudo
 password:
 
 ```bash
-curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.0/jetty-install.sh | bash -s -- --with-proxy
+curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.1/jetty-install.sh | bash -s -- --with-proxy
 ```
 
 Then ask your preferred coding agent to set up a Jetty VM for the current
