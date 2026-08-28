@@ -288,11 +288,11 @@ multipass exec <vm-name> -- sudo npm install -g @anthropic-ai/claude-code
 
 Drop a short note into each installed harness's global instructions file
 (`~/.codex/AGENTS.md` for codex, `~/.claude/CLAUDE.md` for claude-code — never
-the target repo's own `AGENTS.md`/`CLAUDE.md`) covering two things:
+the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
 
 - It's running in a disposable-feeling but actually persistent Multipass VM
   with full sudo, so the agent doesn't over-hedge on system changes.
-- `gh` subcommands that go through GitHub's GraphQL endpoint
+- If GitHub access was requested, `gh` subcommands that go through GitHub's GraphQL endpoint
   (`api.github.com/graphql`) will fail here — the Rules set up in step 6
   only cover specific REST paths, and GraphQL isn't one of them. `gh pr
   create` is the common case that trips this; use the REST equivalent
@@ -304,6 +304,9 @@ the target repo's own `AGENTS.md`/`CLAUDE.md`) covering two things:
       -f base="main" \
       -f body="Description here"
   ```
+- `gh run watch` is another GraphQL-backed exception. Use the installed
+  REST-only replacement `gh-run-watch-rest <run-id>`; it also accepts
+  `--exit-status`, `-i <seconds>`, and `-R <owner/repo>`.
 
 ## 5. Set up SSH access
 
@@ -545,6 +548,116 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq gh
 '
 ```
+
+Install the REST-only Actions watcher alongside `gh`. Its complete source is
+embedded here so this `SKILL.md` remains standalone:
+
+```bash
+multipass exec <vm-name> -- sudo tee /usr/local/bin/gh-run-watch-rest >/dev/null <<'GH_RUN_WATCH_REST'
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: gh-run-watch-rest [-R OWNER/REPO] [-i SECONDS] [--exit-status] RUN_ID"
+}
+
+repo='repos/{owner}/{repo}'
+interval=3
+exit_status=false
+run_id=''
+
+while (($#)); do
+  case "$1" in
+    -R|--repo)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      repo="repos/$2"
+      shift 2
+      ;;
+    -i|--interval)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      interval=$2
+      shift 2
+      ;;
+    --exit-status)
+      exit_status=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      [[ -z "$run_id" ]] || { usage >&2; exit 2; }
+      run_id=$1
+      shift
+      ;;
+  esac
+done
+
+[[ "$run_id" =~ ^[0-9]+$ ]] || { usage >&2; exit 2; }
+[[ "$interval" =~ ^[1-9][0-9]*$ ]] || {
+  echo "interval must be a positive integer" >&2
+  exit 2
+}
+
+trap 'exit 2' INT
+
+run_endpoint="$repo/actions/runs/$run_id"
+jobs_endpoint="$run_endpoint/jobs?per_page=100"
+
+while :; do
+  run_data=$(
+    gh api "$run_endpoint" \
+      --jq '[.status, (.conclusion // ""), (.name // "workflow"), .html_url] | .[]'
+  )
+  mapfile -t run <<<"$run_data"
+
+  status=${run[0]}
+  conclusion=${run[1]}
+  workflow=${run[2]}
+  url=${run[3]}
+
+  jobs=$(
+    gh api --paginate "$jobs_endpoint" --jq '
+      def mark:
+        if .status != "completed" then
+          if .status == "in_progress" then "*" else "." end
+        elif .conclusion == "success" then "✓"
+        elif .conclusion == "skipped" then "-"
+        else "X"
+        end;
+
+      .jobs[] |
+        "\(mark) \(.name) [\(.conclusion // .status)]",
+        (.steps[]? | "  \(mark) \(.name)")
+    '
+  )
+
+  if [[ -t 1 ]]; then
+    printf '\033[2J\033[H'
+  fi
+  printf '%s — %s\n%s\n\n%s\n' \
+    "$workflow" "${conclusion:-$status}" "$url" "$jobs"
+
+  [[ "$status" == completed ]] && break
+  sleep "$interval"
+done
+
+if [[ "$exit_status" == true && "$conclusion" != success ]]; then
+  exit 1
+fi
+GH_RUN_WATCH_REST
+
+multipass exec <vm-name> -- sudo chmod 0755 /usr/local/bin/gh-run-watch-rest
+multipass exec <vm-name> -- gh-run-watch-rest --help
+```
+
+`gh-run-watch-rest` polls only
+`GET /repos/{owner}/{repo}/actions/runs/{run_id}` and its `/jobs` child, so
+the repository-scoped `api.github.com` Rule above covers it. It requires an
+explicit run ID; use `gh run list` to find one. Keep the embedded block above
+as its single source of truth rather than copying its body into the global
+agent instructions.
 
 `gh` needs a global placeholder token too, so it believes it's authenticated
 and sends *an* `Authorization` header for the Rule to overwrite. This is
