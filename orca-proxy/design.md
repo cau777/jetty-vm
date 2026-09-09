@@ -379,19 +379,41 @@ fixed, root-owned copy of the script) closed that hole but kept a standing
 passwordless-root grant on disk indefinitely.
 
 The current design instead compiles `deploy/orca-proxy-firewall-sync` — a
-**single, dependency-free, stdlib-only file**, not a package — with Nuitka
-into a standalone binary, and grants it `CAP_NET_ADMIN`/`CAP_NET_RAW`
+**single, dependency-free, stdlib-only file**, not a package — with
+Nuitka's `--standalone` mode, and grants it `CAP_NET_ADMIN`/`CAP_NET_RAW`
 directly via `setcap cap_net_admin,cap_net_raw+eip`, installed to
-`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` cleared).
-There is no sudoers entry anywhere in this design. File capabilities are
-tied to the file's own inode and are honored regardless of which user
-invokes it — the kernel checks the file's extended attributes at `exec`,
-not the caller's UID — so the security property that matters is unchanged
-from the sudoers design: the binary must live somewhere the unprivileged
-service account cannot write, or that account could simply overwrite it
-and inherit the capability. Compiling (rather than shipping the raw `.py`)
-is required, not cosmetic — file capabilities don't attach to a
-`#!`-scripted file, only to a real ELF.
+`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` cleared)
+alongside the libpython it links against (same directory, required by its
+`$ORIGIN` RPATH). There is no sudoers entry anywhere in this design. File
+capabilities are tied to the file's own inode and are honored regardless of
+which user invokes it — the kernel checks the file's extended attributes at
+`exec`, not the caller's UID — so the security property that matters is
+unchanged from the sudoers design: the binary must live somewhere the
+unprivileged service account cannot write, or that account could simply
+overwrite it and inherit the capability. Compiling (rather than shipping
+the raw `.py`) is required, not cosmetic — file capabilities don't attach
+to a `#!`-scripted file, only to a real ELF.
+
+`--standalone`, specifically, not Nuitka's `--onefile` mode, which was the
+first thing tried and turned out to be silently broken for this use case:
+onefile's bootstrap self-extracts its payload into a fresh `/tmp` directory
+— owned by whichever user *invokes* the binary, i.e. the target user, on
+every single run — and fork+execs the actual compiled program from there.
+That extracted copy is a different file, with no file capabilities of its
+own; `setcap` was only ever applied to the outer onefile binary, and
+capabilities don't survive that inner fork+exec except via the *ambient*
+set, which nothing in Nuitka's generic bootstrap knows to raise before
+forking. Confirmed empirically during development (a throwaway onefile
+build's own `/proc/self/exe`, read from inside the running program,
+resolved to the extracted temp copy, not the setcap'd file): with
+`--onefile`, the capability grant would never reach the process actually
+running this script's Python code at all, and its
+`_raise_ambient_capabilities()` call would fail — closed, silently — for
+real, in production, not just under a plain `pytest` invocation. Switching
+to `--standalone` removes the extra hop entirely: the compiled binary is
+what's directly exec'd (same check — its own `/proc/self/exe` matches the
+installed path), so the file `setcap` targets is the same file whose code
+runs.
 
 The helper carries its own copy of the small amount of logic it actually
 needs (`build_commands`, `reconcile`, a two-line sqlite connect/query)

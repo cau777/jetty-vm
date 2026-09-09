@@ -137,25 +137,52 @@ echo "Compiling the firewall-sync helper (as $TARGET_USER, so the build never ru
 # design, see the file's own docstring) so it's copied to a throwaway name
 # first rather than renamed in place. Built inside $INSTALL_DIR/source
 # (already owned by $TARGET_USER as of the chown -R above) so `as_user`
-# needs no extra directory setup, and removed once the compiled binary is
+# needs no extra directory setup, and removed once the compiled output is
 # copied out below.
+#
+# --standalone, not --onefile: onefile's bootstrap self-extracts to a fresh
+# /tmp directory -- owned by whoever *invokes* the binary, i.e. the target
+# user, every single run -- and fork+execs the real program from there. That
+# extracted copy is a different file with no file capabilities of its own;
+# setcap on the outer onefile binary never reaches it (capabilities only
+# survive that hop via the ambient set, and nothing in Nuitka's generic
+# bootstrap raises it before the fork). Verified empirically during
+# development: /proc/self/exe inside a running onefile build resolves to
+# the extracted temp copy, not the setcap'd file, which means
+# CAP_NET_ADMIN/CAP_NET_RAW would silently never reach the code that calls
+# iptables -- this script's own _raise_ambient_capabilities() would run too
+# late, in a process whose permitted set is already empty, and fail closed
+# exactly the way it does under pytest, except for real. --standalone's
+# output binary is what actually gets exec'd, confirmed the same way
+# (/proc/self/exe matches the installed path directly, no extra hop).
+# `--with patchelf` supplies Nuitka's standalone-mode dependency from a pure
+# wheel, so this needs no system `patchelf` package.
 BUILD_DIR="$INSTALL_DIR/source/.firewall-sync-build"
 as_user "mkdir -p $(printf '%q' "$BUILD_DIR") \
   && cp $(printf '%q' "$INSTALL_DIR/source/deploy/orca-proxy-firewall-sync") $(printf '%q' "$BUILD_DIR/orca-proxy-firewall-sync.py") \
   && cd $(printf '%q' "$INSTALL_DIR/source") \
-  && uv run --with nuitka python -m nuitka --onefile --quiet \
+  && uv run --with nuitka --with patchelf python -m nuitka --standalone --quiet \
        --output-dir=$(printf '%q' "$BUILD_DIR") \
        --output-filename=orca-proxy-firewall-sync.bin \
        $(printf '%q' "$BUILD_DIR/orca-proxy-firewall-sync.py")"
 
 echo "Installing the privileged firewall-sync binary (root-owned, outside $TARGET_USER's home)"
-# The compiled binary, not the compiling toolchain or the source copy, is
-# what gets installed -- root-owned, outside the target user's home, so
-# nothing in the privileged binary's own path is writable by the account
-# that invokes it (see design.md's "Service installation and firewall-rule
-# lifecycle" section for why that invariant is the one that matters here).
+# --standalone produces a directory (the compiled binary plus the shared
+# libraries it links against, e.g. libpython*.so) rather than a single
+# file. The binary's RPATH is $ORIGIN, so its libraries must land in the
+# same directory it does -- both go into /usr/local/sbin, root-owned and
+# non-writable by $TARGET_USER by the same standard-FHS assumption the rest
+# of this design already relies on for the binary itself (see design.md's
+# "Service installation and firewall-rule lifecycle" section). Stale
+# libraries from a prior install (a version bump can change the linked
+# libpython filename) are cleared first so they don't just accumulate.
+DIST_DIR="$BUILD_DIR/orca-proxy-firewall-sync.dist"
 FIREWALL_BIN="/usr/local/sbin/orca-proxy-firewall-sync"
-install -o root -g root -m 0755 "$BUILD_DIR/orca-proxy-firewall-sync.bin" "$FIREWALL_BIN"
+rm -f /usr/local/sbin/libpython*.so*
+install -o root -g root -m 0755 "$DIST_DIR/orca-proxy-firewall-sync.bin" "$FIREWALL_BIN"
+for lib in "$DIST_DIR"/*.so*; do
+  install -o root -g root -m 0644 "$lib" "/usr/local/sbin/$(basename "$lib")"
+done
 rm -rf "$BUILD_DIR"
 
 echo "Granting CAP_NET_ADMIN/CAP_NET_RAW to $FIREWALL_BIN"

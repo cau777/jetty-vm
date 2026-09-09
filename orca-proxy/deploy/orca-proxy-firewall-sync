@@ -2,11 +2,19 @@
 """orca-proxy's privileged firewall-sync helper (design ticket #12).
 
 This is the ONLY thing that ever carries elevated network privilege
-anywhere in orca-proxy. install.sh compiles this file (Nuitka, standalone
-binary -- file capabilities don't attach to a `#!`-scripted file, only to a
-real ELF) and installs it to /usr/local/sbin/orca-proxy-firewall-sync,
-root:root, no group/other write bit, with `setcap
-cap_net_admin,cap_net_raw+eip` applied. Deliberately a single,
+anywhere in orca-proxy. install.sh compiles this file with Nuitka --
+`--standalone`, specifically, not `--onefile`: onefile's bootstrap
+self-extracts into a fresh /tmp directory owned by whoever invokes it and
+fork+execs the real program from there every run, a second file with no
+file capabilities of its own that `setcap` on the outer binary never
+reaches, which would silently strip CAP_NET_ADMIN/CAP_NET_RAW before this
+script's own code ever ran -- and installs the resulting binary (plus its
+linked libpython, both root:root, no group/other write bit) to
+/usr/local/sbin/orca-proxy-firewall-sync, with `setcap
+cap_net_admin,cap_net_raw+eip` applied to the binary directly. File
+capabilities don't attach to a `#!`-scripted file at all, only to a real
+ELF -- compiling is what makes `setcap` possible in the first place.
+Deliberately a single,
 dependency-free, stdlib-only file rather than a package spread across
 multiple modules: the whole point of a fixed, root-owned install path is
 that nothing this binary executes may be writable by the unprivileged
