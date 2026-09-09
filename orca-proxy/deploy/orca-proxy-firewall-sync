@@ -35,7 +35,17 @@ intentionally small enough that duplicating this logic instead of importing
 it costs far less than the alternative (a dependency on anything mutable by
 the grantee).
 
-Deliberately narrow: read the VM table, rebuild two iptables chains, print
+Takes the VM list on argv (repeated `--vm NAME=IP`) rather than reading the
+sqlite state db itself -- one less dependency (no `sqlite3` import, no
+schema knowledge, nothing here touches a file the unprivileged Management
+API process is concurrently writing to). Not a narrower trust boundary
+than reading the db would be: `--db <path>` was just as much an
+unvalidated argv value as `--vm NAME=IP` is, so whoever can already invoke
+this setcap'd binary with arbitrary arguments could always point it at a
+database of their own choosing -- the actual boundary, unchanged either
+way, is "who can execute this file", not what shape its input takes.
+
+Deliberately narrow: given the VM list, rebuild two iptables chains, print
 a JSON per-VM status map to stdout. `_raise_ambient_capabilities()` is the
 one piece of code this design costs over the old sudoers-based helper: a
 `setcap`'d binary's capabilities land in its own effective/permitted set on
@@ -66,10 +76,8 @@ import ctypes.util
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
-from pathlib import Path
 
 NAT_CHAIN = "ORCA_PROXY_NAT"
 FILTER_CHAIN = "ORCA_PROXY_FILTER"
@@ -125,17 +133,14 @@ def _raise_ambient_capabilities() -> None:
             return
 
 
-def _connect_db(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _list_vms(conn: sqlite3.Connection) -> list[tuple[str, str]]:
-    rows = conn.execute("SELECT name, ip_address FROM vms ORDER BY name").fetchall()
-    return [(row["name"], row["ip_address"]) for row in rows]
+def _parse_vm(value: str) -> tuple[str, str]:
+    """argparse `type=` for `--vm NAME=IP` -- `=` can't appear in either a VM
+    name or an IPv4 address, so this needs no quoting/escaping convention.
+    """
+    name, sep, ip = value.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"expected NAME=IP, got {value!r}")
+    return (name, ip)
 
 
 def build_commands(vms: list[tuple[str, str]], bridge: str, proxy_port: int) -> list[list[str]]:
@@ -285,18 +290,17 @@ def ensure_reconciled(
 
 def main(argv: list[str] | None = None, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser(description="Rebuild orca-proxy's per-VM DNAT/DROP rules")
-    parser.add_argument("--db", required=True, type=Path, help="path to state.sqlite")
+    parser.add_argument(
+        "--vm", dest="vms", action="append", default=[], type=_parse_vm, metavar="NAME=IP",
+        help="registered VM, repeatable, e.g. --vm skills-dev=10.14.105.22",
+    )
     parser.add_argument("--bridge", required=True, help="Multipass bridge interface, e.g. mpqemubr0")
     parser.add_argument("--proxy-port", required=True, type=int)
     args = parser.parse_args(argv)
 
     _raise_ambient_capabilities()
 
-    conn = _connect_db(args.db)
-    vms = _list_vms(conn)
-    conn.close()
-
-    status = ensure_reconciled(vms, args.bridge, args.proxy_port, runner=runner)
+    status = ensure_reconciled(args.vms, args.bridge, args.proxy_port, runner=runner)
     print(json.dumps(status))
     return 0 if all(v == "in_sync" for v in status.values()) else 1
 

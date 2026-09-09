@@ -20,19 +20,24 @@ from pathlib import Path
 
 
 def run_reconcile_script(
-    script_path: Path, db_path: Path, bridge: str, proxy_port: int, runner=subprocess.run
+    script_path: Path, vms: list[tuple[str, str]], bridge: str, proxy_port: int, runner=subprocess.run
 ) -> dict[str, str]:
     """What the aiohttp process actually calls: invoke the capability-carrying
     helper binary as a subprocess and parse its JSON stdout. Kept separate
     from the helper itself so the Management API side never holds
     `CAP_NET_ADMIN` itself — only the one auditable, setcap'd binary does.
+
+    `vms` (name, ip_address) pairs are passed as repeated `--vm NAME=IP`
+    args rather than a db path — the helper has no sqlite dependency at
+    all, see its own module docstring for why that isn't a narrower trust
+    boundary than reading the db itself would have been.
     """
     result = runner(
         [
             str(script_path),
-            "--db", str(db_path),
             "--bridge", bridge,
             "--proxy-port", str(proxy_port),
+            *[arg for name, ip in vms for arg in ("--vm", f"{name}={ip}")],
         ],
         capture_output=True,
         text=True,
@@ -51,9 +56,8 @@ class FirewallSync:
     diagnostics endpoint, everything folds into `/readyz`'s JSON body).
     """
 
-    def __init__(self, script_path: Path, db_path: Path, bridge: str, proxy_port: int, runner=subprocess.run):
+    def __init__(self, script_path: Path, bridge: str, proxy_port: int, runner=subprocess.run):
         self._script_path = script_path
-        self._db_path = db_path
         self._bridge = bridge
         self._proxy_port = proxy_port
         self._runner = runner
@@ -70,30 +74,31 @@ class FirewallSync:
         # the same DHCP-leased IP).
         self._ever_reconciled_nonzero = False
 
-    def reconcile(self, vm_count: int | None = None) -> dict[str, str]:
-        """`vm_count`, when given, skips invoking the privileged binary only
-        on a fresh install with zero VMs ever registered this process —
-        there's nothing to reconcile, and no reason to shell out for a
-        rebuild of empty chains. Once any reconcile has populated the
-        chains, a later zero-VM call (e.g. deleting the last registered VM)
-        always runs the script, since skipping it would leave that VM's
-        rules stale in the kernel. Callers that don't have a cheap count
-        handy can omit it; the script itself is idempotent either way.
+    def reconcile(self, vms: list[tuple[str, str]] | None = None) -> dict[str, str]:
+        """`vms`, when given, skips invoking the privileged binary only on a
+        fresh install with an explicitly empty list and no VM ever
+        registered this process — there's nothing to reconcile, and no
+        reason to shell out for a rebuild of empty chains. Once any
+        reconcile has populated the chains, a later empty-list call (e.g.
+        deleting the last registered VM) always runs the script, since
+        skipping it would leave that VM's rules stale in the kernel.
+        Callers that don't have the current list handy can omit it (`None`
+        never skips); the script itself is idempotent either way.
         """
-        if vm_count == 0 and not self._ever_reconciled_nonzero:
+        if vms is not None and not vms and not self._ever_reconciled_nonzero:
             self._status = {}
             return self._status
-        if vm_count:
+        if vms:
             self._ever_reconciled_nonzero = True
         try:
             self._status = run_reconcile_script(
-                self._script_path, self._db_path, self._bridge, self._proxy_port, runner=self._runner
+                self._script_path, vms or [], self._bridge, self._proxy_port, runner=self._runner
             )
         except Exception as exc:  # never let a firewall-sync failure break a VM CRUD response
             self._status = {"__error__": str(exc)}
         return self._status
 
-    async def reconcile_async(self, vm_count: int | None = None) -> dict[str, str]:
+    async def reconcile_async(self, vms: list[tuple[str, str]] | None = None) -> dict[str, str]:
         """Same as reconcile(), but off the calling event loop.
 
         `reconcile()` shells out via a blocking `subprocess.run(...)` call
@@ -110,11 +115,11 @@ class FirewallSync:
         # repopulate the same chains concurrently.
         async with self._async_lock:
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, partial(self.reconcile, vm_count))
+            return await loop.run_in_executor(None, partial(self.reconcile, vms))
 
     async def maintain(
         self,
-        vm_count: Callable[[], int],
+        vms: Callable[[], list[tuple[str, str]]],
         *,
         startup_attempts: int = 10,
         startup_interval: float = 1.0,
@@ -134,14 +139,14 @@ class FirewallSync:
         """
         completed = 0
         for _attempt in range(startup_attempts):
-            await self.reconcile_async(vm_count=vm_count())
+            await self.reconcile_async(vms=vms())
             completed += 1
             if stop_after is not None and completed >= stop_after:
                 return
             await asyncio.sleep(startup_interval)
 
         while True:
-            await self.reconcile_async(vm_count=vm_count())
+            await self.reconcile_async(vms=vms())
             completed += 1
             if stop_after is not None and completed >= stop_after:
                 return

@@ -416,11 +416,21 @@ installed path), so the file `setcap` targets is the same file whose code
 runs.
 
 The helper carries its own copy of the small amount of logic it actually
-needs (`build_commands`, `reconcile`, a two-line sqlite connect/query)
-rather than importing `orca_proxy.db`/`orca_proxy.firewall`/
-`orca_proxy.repo.vms` — those live in the target user's venv, and importing
-from there would just reintroduce the same writable-dependency problem one
-hop away. The duplication cost is deliberately accepted: a handful of
+needs (`build_commands`, `reconcile`) rather than importing
+`orca_proxy.db`/`orca_proxy.firewall`/`orca_proxy.repo.vms` — those live in
+the target user's venv, and importing from there would just reintroduce
+the same writable-dependency problem one hop away. It doesn't even import
+`sqlite3`: the VM list arrives as repeated `--vm NAME=IP` argv pairs
+(parsed by `firewall.py`'s `run_reconcile_script`, which already has the
+current rows from `vms_repo.list_all()` at every call site) rather than by
+opening `state.sqlite` itself. This isn't a narrower trust boundary — a
+`--db <path>` argument would have been just as unvalidated as `--vm
+NAME=IP` is, so it never actually restricted what an invoker could feed
+in — it's a pure simplification: no schema knowledge in the privileged
+binary, no dependency on a file the unprivileged Management API process is
+concurrently writing to (WAL locking, busy timeouts, none of that touches
+the privileged side anymore). The duplication cost of carrying
+`build_commands`/`reconcile` locally is deliberately accepted: a handful of
 small, stable functions copied once is cheaper than a dependency on
 anything mutable by the account that invokes the binary. `firewall.py` (in
 the regular package) keeps only the unprivileged half —

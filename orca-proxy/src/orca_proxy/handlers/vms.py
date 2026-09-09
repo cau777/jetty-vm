@@ -54,7 +54,11 @@ async def put_vm(request: web.Request) -> web.Response:
     # capability-carrying iptables subprocess call to a thread so it can't stall the
     # shared mitmdump/aiohttp event loop (#4's "same process" decision means
     # that loop is also driving live TLS/HTTP traffic).
-    asyncio.create_task(request.app["firewall_sync"].reconcile_async(vm_count=len(vms_repo.list_all(conn))))
+    asyncio.create_task(
+        request.app["firewall_sync"].reconcile_async(
+            vms=[(row["name"], row["ip_address"]) for row in vms_repo.list_all(conn)]
+        )
+    )
     return web.json_response(_serialize(row), status=status)
 
 
@@ -67,5 +71,9 @@ async def delete_vm(request: web.Request) -> web.Response:
     if vms_repo.referenced_by_rule(conn, name):
         raise Conflict(f"VM '{name}' is referenced by a Rule; update or delete it first")
     vms_repo.delete(conn, name)
-    asyncio.create_task(request.app["firewall_sync"].reconcile_async(vm_count=len(vms_repo.list_all(conn))))
+    asyncio.create_task(
+        request.app["firewall_sync"].reconcile_async(
+            vms=[(row["name"], row["ip_address"]) for row in vms_repo.list_all(conn)]
+        )
+    )
     return web.Response(status=204)

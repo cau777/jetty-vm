@@ -48,15 +48,13 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
 
-    firewall_sync = FirewallSync(
-        config.firewall_sync_script_path(), config.db_path(), config.bridge_interface(), config.proxy_port()
-    )
+    firewall_sync = FirewallSync(config.firewall_sync_script_path(), config.bridge_interface(), config.proxy_port())
     app["firewall_sync"] = firewall_sync
     # Reconcile once at startup against whatever VMs are already registered
     # (e.g. after a restart) — not just future create/delete events — so
     # /readyz reflects reality immediately rather than reporting a stale
     # "nothing to sync" true from an empty in-memory status.
-    firewall_sync.reconcile(vm_count=len(vms_repo.list_all(conn)))
+    firewall_sync.reconcile(vms=[(row["name"], row["ip_address"]) for row in vms_repo.list_all(conn)])
 
     async def maintain_firewall(_app: web.Application):
         # Multipass's system service reports started before its asynchronous
@@ -66,7 +64,7 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
         # Multipass/firewall reloads. The helper only mutates when its
         # integrity check finds drift.
         task = asyncio.create_task(
-            firewall_sync.maintain(lambda: len(vms_repo.list_all(conn))),
+            firewall_sync.maintain(lambda: [(row["name"], row["ip_address"]) for row in vms_repo.list_all(conn)]),
             name="orca-proxy-firewall-maintenance",
         )
         _app["firewall_maintenance_task"] = task

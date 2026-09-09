@@ -11,7 +11,6 @@ not a hand-maintained copy of it.
 import importlib.machinery
 import importlib.util
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,21 +33,11 @@ def _load_helper():
 helper = _load_helper()
 
 
-def _make_db(tmp_path, vms: list[tuple[str, str]] = ()):
-    db_path = tmp_path / "state.sqlite"
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "CREATE TABLE vms (name TEXT PRIMARY KEY, ip_address TEXT NOT NULL, "
-        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-    )
+def _vm_args(vms: list[tuple[str, str]]) -> list[str]:
+    args = []
     for name, ip in vms:
-        conn.execute(
-            "INSERT INTO vms (name, ip_address, created_at, updated_at) VALUES (?, ?, '', '')",
-            (name, ip),
-        )
-    conn.commit()
-    conn.close()
-    return db_path
+        args += ["--vm", f"{name}={ip}"]
+    return args
 
 
 class FakeRunner:
@@ -193,39 +182,40 @@ def test_ensure_reconciled_rebuilds_after_external_hook_deletion():
     assert any("-F" in command for command in runner.calls)
 
 
-# --- _list_vms / main (db + argv integration) ---
+# --- _parse_vm / main (argv integration) ---
 
 
-def test_list_vms_reads_name_and_ip_ordered(tmp_path):
-    db_path = _make_db(tmp_path, [("vm-b", "10.0.0.2"), ("vm-a", "10.0.0.1")])
-    conn = helper._connect_db(db_path)
-    assert helper._list_vms(conn) == [("vm-a", "10.0.0.1"), ("vm-b", "10.0.0.2")]
+def test_parse_vm_splits_on_first_equals():
+    assert helper._parse_vm("skills-dev=10.14.105.22") == ("skills-dev", "10.14.105.22")
+
+
+def test_parse_vm_rejects_missing_equals():
+    with pytest.raises(Exception):
+        helper._parse_vm("skills-dev")
 
 
 def _ok_runner(command, **kwargs):
     return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
-def test_main_prints_json_status_and_returns_zero(tmp_path, capsys):
-    db_path = _make_db(tmp_path, [("skills-dev", "10.14.105.22")])
-    exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=_ok_runner)
+def test_main_prints_json_status_and_returns_zero(capsys):
+    argv = ["--bridge", "mpqemubr0", "--proxy-port", "8443", *_vm_args([("skills-dev", "10.14.105.22")])]
+    exit_code = helper.main(argv, runner=_ok_runner)
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"skills-dev": "in_sync"}
 
 
-def test_main_returns_nonzero_on_failure(tmp_path, capsys):
-    db_path = _make_db(tmp_path, [("skills-dev", "10.14.105.22")])
-
+def test_main_returns_nonzero_on_failure(capsys):
     def failing_runner(command, **kwargs):
         return SimpleNamespace(returncode=1, stdout="", stderr="permission denied")
 
-    exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=failing_runner)
+    argv = ["--bridge", "mpqemubr0", "--proxy-port", "8443", *_vm_args([("skills-dev", "10.14.105.22")])]
+    exit_code = helper.main(argv, runner=failing_runner)
     assert exit_code == 1
 
 
-def test_main_with_no_vms_still_prints_valid_json(tmp_path, capsys):
-    db_path = _make_db(tmp_path)
-    exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=_ok_runner)
+def test_main_with_no_vms_still_prints_valid_json(capsys):
+    exit_code = helper.main(["--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=_ok_runner)
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {}
 
