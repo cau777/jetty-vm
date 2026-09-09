@@ -1,9 +1,10 @@
-"""Tests for deploy/orca-proxy-firewall-sync -- the single, dependency-free,
-root-owned script (design ticket #12) that is the entire privileged attack
-surface in orca-proxy. It's not part of the `orca_proxy` package (deliberately
--- see its own module docstring for why), so it's loaded here directly from
-its real path via importlib, the same file install.sh copies verbatim to
-/usr/local/sbin/orca-proxy-firewall-sync. This is what's actually under test,
+"""Tests for deploy/orca-proxy-firewall-sync -- the single, dependency-free
+script (design ticket #12) that is the entire privileged attack surface in
+orca-proxy. It's not part of the `orca_proxy` package (deliberately -- see
+its own module docstring for why), so it's loaded here directly from its
+real path via importlib, the same source install.sh compiles (Nuitka) and
+installs, `setcap`-granted, to /usr/local/sbin/orca-proxy-firewall-sync.
+This is what's actually under test (pre-compile, running as plain Python),
 not a hand-maintained copy of it.
 """
 
@@ -227,3 +228,19 @@ def test_main_with_no_vms_still_prints_valid_json(tmp_path, capsys):
     exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=_ok_runner)
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {}
+
+
+# --- _raise_ambient_capabilities ---
+
+
+def test_raise_ambient_capabilities_does_not_raise_when_unprivileged(capsys):
+    """Running from a plain `pytest` process (no CAP_NET_ADMIN in the
+    permitted/inheritable sets prctl(PR_CAP_AMBIENT_RAISE) requires) must
+    not blow up main() -- it's best-effort, see the function's own
+    docstring. The real signal that this failed is the subsequent
+    `iptables` calls returning non-zero, which reconcile() already turns
+    into an "error" status; that path is covered by
+    test_main_returns_nonzero_on_failure and friends.
+    """
+    helper._raise_ambient_capabilities()  # must not raise
+    assert "orca-proxy-firewall-sync" in capsys.readouterr().err

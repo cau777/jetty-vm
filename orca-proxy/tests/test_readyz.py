@@ -7,7 +7,8 @@ async def test_readyz_ready_after_startup(client):
         "migrations": True,
         "ca_materialized": True,
         # No VMs registered yet — vacuously synced (#12's Q7), no real
-        # sudo/iptables call needed to reach "ready" on a fresh install.
+        # capability-carrying iptables call needed to reach "ready" on a
+        # fresh install.
         "firewall_synced": True,
     }
     assert body["firewall_status"] == {}

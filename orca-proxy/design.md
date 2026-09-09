@@ -370,46 +370,76 @@ Blue-green deployment for the *unprivileged* half:
 **The privileged half is deliberately *not* blue-green** — a security fix,
 not a simplification. The original design resolved
 `config.firewall_sync_script_path()` through the stable `~/.orca-proxy/
-current/venv/bin/...` symlink specifically so the sudoers entry would never
-need rewriting across upgrades. That was a real bug: every link in that
+current/venv/bin/...` symlink. That was a real bug: every link in that
 chain (`current`, the `venv` symlink inside it, the script file itself) is
-owned and writable by the same unprivileged user the sudoers `NOPASSWD`
-entry grants root to — trivially self-escalating (overwrite the file,
-`sudo` it, no password, no audit). `install.sh` now copies
-`deploy/orca-proxy-firewall-sync` — a **single, dependency-free,
-stdlib-only file**, not a package — verbatim to
-`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` cleared),
-run via the system `python3`, never the target user's venv. It carries its
-own copy of the small amount of logic it actually needs (`build_commands`,
-`reconcile`, a two-line sqlite connect/query) rather than importing
-`orca_proxy.db`/`orca_proxy.firewall`/`orca_proxy.repo.vms` — those live in
-the target user's venv, and importing from there would just reintroduce
-the same writable-dependency problem one hop away. The duplication cost is
-deliberately accepted: a handful of small, stable functions copied once is
-cheaper than a dependency on anything mutable by the account the sudoers
-rule names. `firewall.py` (in the regular package) keeps only the
-unprivileged half — `FirewallSync`/`run_reconcile_script`, which shells out
-to this script via `sudo -n` and never runs `build_commands`/`reconcile`
-itself. Nothing in the privileged execution path is writable by the
-account the sudoers rule names. The sudoers entry additionally pins the
-exact `--db`/`--bridge`/`--proxy-port` arguments (not just the script
-path) — closing the separate hole where a bare `NOPASSWD: /path/to/cmd`
-permits *any* arguments, which `--bridge` interpolated into a shell string
-would otherwise turn into a straight injection primitive (see
-`deploy/orca-proxy-firewall-sync`'s `_BRIDGE_NAME_RE` comment).
+owned and writable by the same unprivileged user that ultimately gets to
+run it with elevated access — trivially self-escalating (overwrite the
+file, run it, no audit). A second design (sudoers `NOPASSWD` on a
+fixed, root-owned copy of the script) closed that hole but kept a standing
+passwordless-root grant on disk indefinitely.
+
+The current design instead compiles `deploy/orca-proxy-firewall-sync` — a
+**single, dependency-free, stdlib-only file**, not a package — with Nuitka
+into a standalone binary, and grants it `CAP_NET_ADMIN`/`CAP_NET_RAW`
+directly via `setcap cap_net_admin,cap_net_raw+eip`, installed to
+`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` cleared).
+There is no sudoers entry anywhere in this design. File capabilities are
+tied to the file's own inode and are honored regardless of which user
+invokes it — the kernel checks the file's extended attributes at `exec`,
+not the caller's UID — so the security property that matters is unchanged
+from the sudoers design: the binary must live somewhere the unprivileged
+service account cannot write, or that account could simply overwrite it
+and inherit the capability. Compiling (rather than shipping the raw `.py`)
+is required, not cosmetic — file capabilities don't attach to a
+`#!`-scripted file, only to a real ELF.
+
+The helper carries its own copy of the small amount of logic it actually
+needs (`build_commands`, `reconcile`, a two-line sqlite connect/query)
+rather than importing `orca_proxy.db`/`orca_proxy.firewall`/
+`orca_proxy.repo.vms` — those live in the target user's venv, and importing
+from there would just reintroduce the same writable-dependency problem one
+hop away. The duplication cost is deliberately accepted: a handful of
+small, stable functions copied once is cheaper than a dependency on
+anything mutable by the account that invokes the binary. `firewall.py` (in
+the regular package) keeps only the unprivileged half —
+`FirewallSync`/`run_reconcile_script`, which runs this binary directly (no
+`sudo` prefix) and never runs `build_commands`/`reconcile` itself.
+
+One real cost of moving off sudoers: a `setcap`'d binary's capabilities
+land in its own effective/permitted set on `exec`, but do **not**
+automatically propagate to a plain child process it execs (`iptables`
+itself carries no file capabilities) — only the *ambient* capability set
+survives that hop, and file capabilities clear the ambient set by default.
+`orca-proxy-firewall-sync` explicitly raises `CAP_NET_ADMIN`/`CAP_NET_RAW`
+into its own ambient set (`_raise_ambient_capabilities()`, via
+`prctl(PR_CAP_AMBIENT_RAISE)`) once at startup, before the first `iptables`
+call, to make that inheritance happen; this is best-effort and non-fatal —
+if it fails (e.g. running the source file directly rather than the
+`setcap`'d compiled binary), the subsequent `iptables` calls simply fail
+with their own non-zero exit, which `reconcile()`/`is_in_sync()` already
+turn into the normal fail-closed "error" status.
+
+There is also no more argument-pinning. The sudoers entry used to pin the
+exact `--db`/`--bridge`/`--proxy-port` values a `NOPASSWD: /path/to/cmd`
+grant would otherwise let through unpinned — a setcap'd binary has no
+equivalent mechanism; whoever can execute it chooses its arguments. The
+`_BRIDGE_NAME_RE` validation inside the helper (see its own comment) is
+now the *only* thing standing between an attacker-controlled `--bridge`
+value and a shell-injection-to-capability primitive, not a second layer
+behind sudoers pinning.
 
 Consequence: upgrading now genuinely needs a fresh `sudo bash install.sh`
-run — there is no passwordless-sudo path left that could re-provision the
+run — there is no passwordless path left that could re-provision the
 privileged half on its own, by design. `install.sh` itself must run as
 root (`curl .../install.sh | sudo bash`, or `sudo bash deploy/install.sh`
 against a local checkout); it still builds the venv and manages the
 systemd **user** unit as the target user (`SUDO_USER`, or `ORCA_PROXY_USER`
-to override), only elevating for the two steps that actually need root:
-writing the sudoers file and installing the firewall-sync copy. Changing
-`ORCA_PROXY_BRIDGE`/`ORCA_PROXY_PORT` after install without re-running
-`install.sh` will make the pinned sudoers args stop matching — reconcile
-then fails closed (`sudo -n` denied) rather than silently accepting an
-unpinned value.
+to override), only elevating for the steps that actually need root:
+compiling and installing the firewall-sync binary and applying `setcap` to
+it. Unlike the old design, `ORCA_PROXY_BRIDGE`/`ORCA_PROXY_PORT` are read
+live by the running service (`config.py`) and passed as plain `argv` to
+the helper on every reconcile — there is nothing install-time to keep in
+sync, and nothing that goes stale if they're changed without a reinstall.
 
 ## Web UI (#7, #15)
 

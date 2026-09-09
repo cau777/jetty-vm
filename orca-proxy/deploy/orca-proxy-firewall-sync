@@ -1,33 +1,41 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """orca-proxy's privileged firewall-sync helper (design ticket #12).
 
-This is the ONLY thing that ever runs with root privileges anywhere in
-orca-proxy, and it is installed verbatim (byte-for-byte, `install -m 0755`,
-no build/bundle step) to /usr/local/sbin/orca-proxy-firewall-sync,
-root:root, no group/other write bit -- see install.sh and the sudoers
-template it writes. Deliberately a single, dependency-free, stdlib-only
-file rather than a package spread across multiple modules: the whole point
-of the sudoers NOPASSWD entry naming this exact path is that nothing it
-executes may be writable by the unprivileged account it's granted to, and a
-single flat file sitting in a root-owned location, with zero imports
+This is the ONLY thing that ever carries elevated network privilege
+anywhere in orca-proxy. install.sh compiles this file (Nuitka, standalone
+binary -- file capabilities don't attach to a `#!`-scripted file, only to a
+real ELF) and installs it to /usr/local/sbin/orca-proxy-firewall-sync,
+root:root, no group/other write bit, with `setcap
+cap_net_admin,cap_net_raw+eip` applied. Deliberately a single,
+dependency-free, stdlib-only file rather than a package spread across
+multiple modules: the whole point of a fixed, root-owned install path is
+that nothing this binary executes may be writable by the unprivileged
+service account that invokes it, and a single flat file, with zero imports
 outside the standard library, is the smallest and most auditable thing that
-can satisfy that -- `cat` this one file and you've reviewed the entire
-privileged attack surface.
+can satisfy that -- `cat` this one file (pre-compile) and you've reviewed
+the entire privileged attack surface.
 
 Not imported by, and does not import from, the `orca_proxy` package --
 that package lives in the target user's own venv, which this script must
-never touch or depend on. (A prior version resolved the sudoers path
-through that venv via a stable symlink specifically so upgrades wouldn't
-need a fresh sudoers entry; that was the bug -- every link in the chain was
-writable by the same user the NOPASSWD grant named, so overwriting the
-script and running `sudo` on it was a zero-effort root escalation. See
-design.md's "Service installation and firewall-rule lifecycle" section.)
-The functions below are intentionally small enough that duplicating this
-logic instead of importing it costs far less than the alternative (a
-dependency on anything mutable by the grantee).
+never touch or depend on. (A prior version resolved this path through that
+venv via a stable symlink specifically so upgrades wouldn't need a fresh
+grant; that was the bug -- every link in the chain was writable by the same
+user the elevated access was granted to, so overwriting the script and
+re-running it was a zero-effort escalation. See design.md's "Service
+installation and firewall-rule lifecycle" section.) The functions below are
+intentionally small enough that duplicating this logic instead of importing
+it costs far less than the alternative (a dependency on anything mutable by
+the grantee).
 
 Deliberately narrow: read the VM table, rebuild two iptables chains, print
-a JSON per-VM status map to stdout.
+a JSON per-VM status map to stdout. `_raise_ambient_capabilities()` is the
+one piece of code this design costs over the old sudoers-based helper: a
+`setcap`'d binary's capabilities land in its own effective/permitted set on
+exec, but do NOT automatically propagate to a plain child process it execs
+(here, `iptables`) -- only capabilities in the *ambient* set survive that
+hop, and file capabilities clear the ambient set by default. Raising them
+back in, once, before the first `iptables` call, is what makes the child
+inherit them. See `deploy/install.sh` for the install-time `setcap` call.
 
 Two dedicated chains, integrity-checked on every call and fully rebuilt
 (flushed + repopulated) whenever they have drifted -- never incrementally
@@ -45,7 +53,10 @@ patched:
 """
 
 import argparse
+import ctypes
+import ctypes.util
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -59,11 +70,51 @@ FILTER_CHAIN = "ORCA_PROXY_FILTER"
 # usable characters; no shell metacharacters permitted. `bridge` reaches
 # this module from argv (operator-controlled but *unvalidated* until this
 # check) and gets interpolated into `sh -c` strings below -- an unvalidated
-# value here is a straight shell-injection-to-root primitive. (The
-# installed sudoers entry additionally pins the exact --bridge value it
-# will invoke this script with, as a second, independent layer -- this
-# check stands on its own regardless.)
+# value here is a straight shell-injection-to-capability primitive. Unlike
+# the old sudoers design, there is no separate args-pinning layer above
+# this one anymore (a setcap'd binary's capability isn't scoped to any
+# particular argument list) -- this check is the only thing standing
+# between an attacker-controlled --bridge and that primitive.
 _BRIDGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+
+# prctl(2) / capability(7) constants -- no stdlib wrapper for either.
+_PR_CAP_AMBIENT = 47
+_PR_CAP_AMBIENT_RAISE = 2
+_CAP_NET_ADMIN = 12
+_CAP_NET_RAW = 13
+
+
+def _raise_ambient_capabilities() -> None:
+    """Propagate CAP_NET_ADMIN/CAP_NET_RAW into the `iptables` children this
+    script execs.
+
+    `setcap ...+eip` (see install.sh) puts these capabilities in this
+    binary's own effective/permitted/inheritable sets on exec -- enough for
+    this process to make privileged syscalls itself -- but a plain,
+    non-privileged child process (`iptables`, no file capabilities of its
+    own) only inherits capabilities that are also in the parent's *ambient*
+    set, which file capabilities clear by default. Raising them here, once,
+    before the first `iptables` call, is what makes that inheritance
+    happen.
+
+    Best-effort and non-fatal: if this fails (not actually running from the
+    setcap'd binary -- e.g. under test, or a plain source-file invocation),
+    the `iptables` calls below will simply fail with their own non-zero
+    exit code, which reconcile()/is_in_sync() already turn into an "error"
+    status -- the normal, already-tested fail-closed path. There is no
+    separate failure mode to handle here.
+    """
+    libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+    for cap in (_CAP_NET_ADMIN, _CAP_NET_RAW):
+        if libc.prctl(_PR_CAP_AMBIENT, _PR_CAP_AMBIENT_RAISE, cap, 0, 0) != 0:
+            errno = ctypes.get_errno()
+            print(
+                f"orca-proxy-firewall-sync: could not raise CAP {cap} into the ambient "
+                f"set ({os.strerror(errno)}); iptables calls will fail closed if this "
+                "process isn't already fully privileged",
+                file=sys.stderr,
+            )
+            return
 
 
 def _connect_db(db_path: Path) -> sqlite3.Connection:
@@ -230,6 +281,8 @@ def main(argv: list[str] | None = None, runner=subprocess.run) -> int:
     parser.add_argument("--bridge", required=True, help="Multipass bridge interface, e.g. mpqemubr0")
     parser.add_argument("--proxy-port", required=True, type=int)
     args = parser.parse_args(argv)
+
+    _raise_ambient_capabilities()
 
     conn = _connect_db(args.db)
     vms = _list_vms(conn)

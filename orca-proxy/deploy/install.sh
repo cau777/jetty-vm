@@ -8,22 +8,24 @@ set -euo pipefail
 #   curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/orca-proxy/deploy/install.sh | sudo bash
 #
 # Why root now, when the old install.sh ran as the target user and only
-# sudo'd two small steps: the firewall-sync helper's sudoers NOPASSWD entry
-# is only safe if nothing in the path it executes is writable by the user
-# that entry names. The old layout resolved through
-# ~/.orca-proxy/current/venv/bin/... — fully writable by that same user,
-# so overwriting it and running `sudo` was a trivial root escalation. The
-# fix installs a standalone copy of the helper to a root-owned location
+# sudo'd two small steps: the firewall-sync helper is only safe if nothing
+# in its own path is writable by the user invoking it. The old layout
+# resolved through ~/.orca-proxy/current/venv/bin/... — fully writable by
+# that same user, so overwriting it (then running it, formerly via `sudo`,
+# now via its own `setcap`-granted capability) was a trivial escalation.
+# The fix installs a standalone copy of the helper to a root-owned location
 # outside the user's home directory entirely, which this script can only do
 # as root. Upgrading is accordingly now a deliberate "run this again as
-# root" action rather than something a passwordless-sudo step does for you
-# — see design.md's "Service installation and firewall-rule lifecycle"
-# section.
+# root" action — see design.md's "Service installation and firewall-rule
+# lifecycle" section.
 #
 # Everything *unprivileged* (the venv, the systemd --user unit, the data
 # directory) is still built and owned by the target user, not root — this
-# script only elevates for the two things that actually need it: writing
-# the sudoers file, and installing the root-owned firewall-sync copy.
+# script only elevates for the two things that actually need it: compiling
+# and installing the root-owned, capability-bearing firewall-sync binary,
+# and applying `setcap` to it. There is no sudoers entry anywhere in this
+# design — the helper's elevated access comes from a file capability on its
+# own binary, not from a NOPASSWD grant.
 
 ORCA_PROXY_GIT_URL="${ORCA_PROXY_GIT_URL:-https://github.com/cau777/jetty-vm.git}"
 
@@ -36,6 +38,15 @@ if [ "$(id -u)" -ne 0 ]; then
 MSG
   exit 1
 fi
+
+command -v setcap > /dev/null || {
+  echo "!! setcap is required (Debian/Ubuntu: apt install libcap2-bin) to grant the firewall-sync binary CAP_NET_ADMIN/CAP_NET_RAW." >&2
+  exit 1
+}
+command -v cc > /dev/null || command -v gcc > /dev/null || {
+  echo "!! a C compiler (gcc or cc) is required to compile the firewall-sync helper." >&2
+  exit 1
+}
 
 # --- who is this actually for? ---
 # `sudo bash install.sh` sets SUDO_USER to the invoking (non-root) account;
@@ -120,36 +131,47 @@ chown "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/proxy_addon.py"
 echo "Writing systemd user unit"
 install -o "$TARGET_USER" -g "$TARGET_USER" -m 0644 "$REPO_DIR/deploy/orca-proxy.service" "$UNIT_PATH"
 
-echo "Installing the privileged firewall-sync helper (root-owned, outside $TARGET_USER's home)"
-# A single, dependency-free, stdlib-only file (see its own module
-# docstring) -- copied verbatim, not built/bundled from anything, and run
-# against the system python3, never the target user's venv. That's the
-# point: nothing the sudoers rule executes is writable by the user it
-# grants NOPASSWD root to, and there's exactly one file to audit.
-FIREWALL_BIN="/usr/local/sbin/orca-proxy-firewall-sync"
-install -o root -g root -m 0755 "$REPO_DIR/deploy/orca-proxy-firewall-sync" "$FIREWALL_BIN"
+echo "Compiling the firewall-sync helper (as $TARGET_USER, so the build never runs as root)"
+# Nuitka needs a real .py suffix to recognize the entry file; the source is
+# deliberately extensionless in the repo (installed verbatim in the old
+# design, see the file's own docstring) so it's copied to a throwaway name
+# first rather than renamed in place. Built inside $INSTALL_DIR/source
+# (already owned by $TARGET_USER as of the chown -R above) so `as_user`
+# needs no extra directory setup, and removed once the compiled binary is
+# copied out below.
+BUILD_DIR="$INSTALL_DIR/source/.firewall-sync-build"
+as_user "mkdir -p $(printf '%q' "$BUILD_DIR") \
+  && cp $(printf '%q' "$INSTALL_DIR/source/deploy/orca-proxy-firewall-sync") $(printf '%q' "$BUILD_DIR/orca-proxy-firewall-sync.py") \
+  && cd $(printf '%q' "$INSTALL_DIR/source") \
+  && uv run --with nuitka python -m nuitka --onefile --quiet \
+       --output-dir=$(printf '%q' "$BUILD_DIR") \
+       --output-filename=orca-proxy-firewall-sync.bin \
+       $(printf '%q' "$BUILD_DIR/orca-proxy-firewall-sync.py")"
 
-echo "Configuring sudoers for the firewall-sync helper"
-ORCA_PROXY_BRIDGE_VALUE="${ORCA_PROXY_BRIDGE:-mpqemubr0}"
-ORCA_PROXY_PORT_VALUE="${ORCA_PROXY_PORT:-8443}"
-DB_PATH="$DATA_DIR/state.sqlite"
-SUDOERS_PATH="/etc/sudoers.d/orca-proxy-firewall-sync"
-SUDOERS_CONTENT="$(sed \
-  -e "s|__USER__|$TARGET_USER|g" \
-  -e "s|__FIREWALL_BIN__|$FIREWALL_BIN|g" \
-  -e "s|__DB_PATH__|$DB_PATH|g" \
-  -e "s|__BRIDGE__|$ORCA_PROXY_BRIDGE_VALUE|g" \
-  -e "s|__PROXY_PORT__|$ORCA_PROXY_PORT_VALUE|g" \
-  "$REPO_DIR/deploy/orca-proxy-firewall-sync.sudoers.template")"
-echo "$SUDOERS_CONTENT" > "$SUDOERS_PATH"
-chmod 0440 "$SUDOERS_PATH"
-visudo -c -f "$SUDOERS_PATH"
+echo "Installing the privileged firewall-sync binary (root-owned, outside $TARGET_USER's home)"
+# The compiled binary, not the compiling toolchain or the source copy, is
+# what gets installed -- root-owned, outside the target user's home, so
+# nothing in the privileged binary's own path is writable by the account
+# that invokes it (see design.md's "Service installation and firewall-rule
+# lifecycle" section for why that invariant is the one that matters here).
+FIREWALL_BIN="/usr/local/sbin/orca-proxy-firewall-sync"
+install -o root -g root -m 0755 "$BUILD_DIR/orca-proxy-firewall-sync.bin" "$FIREWALL_BIN"
+rm -rf "$BUILD_DIR"
+
+echo "Granting CAP_NET_ADMIN/CAP_NET_RAW to $FIREWALL_BIN"
+# This is the entire privilege grant in this design -- no sudoers entry,
+# no NOPASSWD rule. The capability is tied to this exact file's inode, so
+# $FIREWALL_BIN being root-owned and outside $TARGET_USER's home (above) is
+# what keeps it out of that account's reach; setcap itself grants nothing
+# beyond what those permissions already protect.
+setcap cap_net_admin,cap_net_raw+eip "$FIREWALL_BIN"
 
 # Atomic repoint — the only step that changes what "current" (and therefore
-# the systemd unit) actually points at. No longer sudoers-relevant: the
-# firewall-sync helper lives outside this symlink chain entirely now.
-# Created by the target user directly (they already own $DATA_DIR) for the
-# same reason as the venv symlink above.
+# the systemd unit) actually points at. Irrelevant to the firewall-sync
+# binary either way: it lives outside this symlink chain entirely, at a
+# fixed path that doesn't change across upgrades. Created by the target
+# user directly (they already own $DATA_DIR) for the same reason as the
+# venv symlink above.
 as_user "ln -sfn $(printf '%q' "$INSTALL_DIR") $(printf '%q' "$CURRENT_LINK")"
 
 echo "Starting orca-proxy.service"
@@ -157,12 +179,11 @@ loginctl enable-linger "$TARGET_USER"
 systemctl start "user@$TARGET_UID.service" 2>/dev/null || true
 # `enable --now` is a no-op on an already-running unit -- it does NOT
 # restart it. On an upgrade that silently leaves the OLD process running
-# (old code, old config.firewall_sync_script_path() resolution, etc.)
-# despite `current` having been correctly repointed -- the exact failure
-# mode that motivated pinning the sudoers args in the first place stays
-# invisible until something finally triggers a real reconcile call, which
-# then 403s against the freshly-written sudoers file. `restart`
-# unconditionally guarantees the new version is actually what's running.
+# (old code, still resolved against whatever "current" pointed at when it
+# started) despite `current` having just been repointed above -- invisible
+# until something finally triggers a reconcile call against a process
+# that's still running stale logic. `restart` unconditionally guarantees
+# the new version is actually what's running.
 as_user "systemctl --user daemon-reload && systemctl --user enable orca-proxy.service && systemctl --user restart orca-proxy.service"
 
 sleep 2
@@ -173,4 +194,4 @@ as_user "systemctl --user is-active --quiet orca-proxy.service" || {
 }
 
 echo "orca-proxy $VERSION installed and running (current -> $INSTALL_DIR)"
-echo "Privileged firewall-sync helper: $FIREWALL_BIN (root-owned, sudoers-gated for $TARGET_USER)"
+echo "Privileged firewall-sync helper: $FIREWALL_BIN (root-owned, CAP_NET_ADMIN/CAP_NET_RAW via setcap, no sudoers entry)"

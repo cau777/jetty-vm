@@ -7,7 +7,7 @@ from orca_proxy.firewall import FirewallSync
 
 
 class FakeScriptRunner:
-    """Fakes the `sudo -n <script> ...` subprocess call itself, not the
+    """Fakes the direct `<script> ...` subprocess call itself, not the
     inner iptables commands — this is what FirewallSync actually invokes.
     The inner commands (build_commands/reconcile) now live entirely in
     deploy/orca-proxy-firewall-sync — see test_firewall_sync_helper.py.
@@ -59,7 +59,7 @@ def test_firewall_sync_marks_unsynced_on_malformed_output():
 
 def test_firewall_sync_never_raises_even_if_runner_throws():
     def exploding_runner(*args, **kwargs):
-        raise OSError("sudo not found")
+        raise OSError("orca-proxy-firewall-sync: command not found")
 
     sync = FirewallSync("/path/to/script", "/path/to/db", "mpqemubr0", 8443, runner=exploding_runner)
     status = sync.reconcile(vm_count=1)
@@ -81,11 +81,11 @@ def test_firewall_sync_flushes_on_delete_to_zero_after_having_had_vms():
     assert sync.status == {}
 
 
-def test_firewall_sync_invokes_sudo_n_with_the_named_script_path():
+def test_firewall_sync_invokes_the_named_script_path_directly():
     runner = FakeScriptRunner()
     sync = FirewallSync("/opt/orca-proxy/bin/orca-proxy-firewall-sync", "/data/state.sqlite", "mpqemubr0", 8443, runner=runner)
     sync.reconcile(vm_count=1)
-    assert runner.calls[0][:3] == ["sudo", "-n", "/opt/orca-proxy/bin/orca-proxy-firewall-sync"]
+    assert runner.calls[0][:1] == ["/opt/orca-proxy/bin/orca-proxy-firewall-sync"]
 
 
 async def test_maintenance_restores_rules_deleted_after_initial_reconcile():

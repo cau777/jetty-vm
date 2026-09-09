@@ -1,13 +1,14 @@
 """Unprivileged side of per-VM DNAT reconciliation (design ticket #12).
 
 The actual iptables logic (`build_commands`/`reconcile`) lives entirely in
-`deploy/orca-proxy-firewall-sync` now, not here — that script is the only
-thing that ever runs with root, and is installed as a single,
-dependency-free, root-owned file specifically so nothing in its execution
-path is writable by the unprivileged account the sudoers NOPASSWD entry
-names. This module is what the Management API (never root) actually calls:
-shell out to that sudoers-gated helper via `sudo -n` and parse its JSON
-stdout.
+`deploy/orca-proxy-firewall-sync` now, not here — that script is compiled
+(Nuitka) to a standalone binary and carries `CAP_NET_ADMIN`/`CAP_NET_RAW`
+via `setcap`, installed root-owned so nothing in its execution path is
+writable by the unprivileged service account. This module is what the
+Management API (never root, never capability-bearing) actually calls: run
+that capability-carrying binary directly and parse its JSON stdout — no
+`sudo`, no sudoers entry, the kernel grants the capability from the file's
+own extended attributes regardless of who invokes it.
 """
 
 import asyncio
@@ -21,14 +22,14 @@ from pathlib import Path
 def run_reconcile_script(
     script_path: Path, db_path: Path, bridge: str, proxy_port: int, runner=subprocess.run
 ) -> dict[str, str]:
-    """What the aiohttp process actually calls: invoke the sudoers-gated
-    helper script as a subprocess and parse its JSON stdout. Kept separate
-    from the helper script itself so the Management API side never needs
-    its own passwordless-root — only the one auditable script does.
+    """What the aiohttp process actually calls: invoke the capability-carrying
+    helper binary as a subprocess and parse its JSON stdout. Kept separate
+    from the helper itself so the Management API side never holds
+    `CAP_NET_ADMIN` itself — only the one auditable, setcap'd binary does.
     """
     result = runner(
         [
-            "sudo", "-n", str(script_path),
+            str(script_path),
             "--db", str(db_path),
             "--bridge", bridge,
             "--proxy-port", str(proxy_port),
@@ -45,7 +46,7 @@ def run_reconcile_script(
 
 
 class FirewallSync:
-    """aiohttp-side handle: triggers the sudoers-gated script and remembers
+    """aiohttp-side handle: triggers the capability-carrying binary and remembers
     the last-known per-VM status for `/readyz` (#12's Q7 — no separate
     diagnostics endpoint, everything folds into `/readyz`'s JSON body).
     """
@@ -61,7 +62,7 @@ class FirewallSync:
         # Tracks whether this process has ever asked the script to populate
         # the chains — NOT whether any VM is registered right now. Needed
         # to distinguish "fresh install, chains never touched, nothing to
-        # flush" (safe to skip — avoids requiring sudo to be configured
+        # flush" (safe to skip — avoids invoking the helper binary
         # before the first VM is ever registered) from "we just deleted the
         # last VM" (the chains still hold that VM's REDIRECT/DROP rules
         # from the last real reconcile and MUST be flushed, or they persist
@@ -70,10 +71,10 @@ class FirewallSync:
         self._ever_reconciled_nonzero = False
 
     def reconcile(self, vm_count: int | None = None) -> dict[str, str]:
-        """`vm_count`, when given, skips invoking the privileged script only
+        """`vm_count`, when given, skips invoking the privileged binary only
         on a fresh install with zero VMs ever registered this process —
-        there's nothing to reconcile, and no reason to shell out to sudo for
-        a rebuild of empty chains. Once any reconcile has populated the
+        there's nothing to reconcile, and no reason to shell out for a
+        rebuild of empty chains. Once any reconcile has populated the
         chains, a later zero-VM call (e.g. deleting the last registered VM)
         always runs the script, since skipping it would leave that VM's
         rules stale in the kernel. Callers that don't have a cheap count
@@ -95,13 +96,13 @@ class FirewallSync:
     async def reconcile_async(self, vm_count: int | None = None) -> dict[str, str]:
         """Same as reconcile(), but off the calling event loop.
 
-        `reconcile()` shells out via a blocking `subprocess.run(sudo ...)`
-        call — fine for app.py's one startup call (runs before the loop is
+        `reconcile()` shells out via a blocking `subprocess.run(...)` call
+        — fine for app.py's one startup call (runs before the loop is
         serving anything), but fatal for the Management API's per-VM
         create/delete handlers, which run embedded on mitmdump's own
         asyncio loop (#4's "same process" decision): a blocking call there
         freezes every in-flight TLS handshake and proxied request on the
-        data plane for the duration of the sudo+iptables round-trip. Offload
+        data plane for the duration of the iptables round-trip. Offload
         to a thread via run_in_executor so the loop stays responsive.
         """
         # VM CRUD and the maintenance loop can request reconciliation at the

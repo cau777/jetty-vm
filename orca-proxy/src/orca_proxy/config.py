@@ -36,20 +36,21 @@ def management_api_port() -> int:
 
 
 def firewall_sync_script_path() -> Path:
-    """Absolute path to the sudoers-gated helper (#12) — the sudoers
-    NOPASSWD entry names this exact path.
+    """Absolute path to the capability-carrying helper binary (#12) — the
+    exact file `setcap cap_net_admin,cap_net_raw+eip` was applied to.
 
     Deliberately a fixed, root-owned location (/usr/local/sbin/...), NOT
-    anything under the unprivileged user's home directory (an earlier
-    version resolved through ~/.orca-proxy/current/venv/bin/..., which is
-    fully writable by the same user the sudoers entry grants NOPASSWD
-    root to — trivially self-escalating: overwrite the file the symlink
-    chain resolves to, then `sudo` it, no password required). install.sh
-    copies deploy/orca-proxy-firewall-sync here verbatim — a single,
-    dependency-free, stdlib-only file (see its own module docstring),
-    run via the system python3, never the target user's venv — so nothing
-    in the privileged execution path is writable by the account the
-    sudoers entry names.
+    anything under the unprivileged user's home directory. A file
+    capability is granted to a specific inode, not to whoever invokes it —
+    so if this path resolved through anything the service account could
+    write (an earlier version resolved through
+    ~/.orca-proxy/current/venv/bin/..., which is fully writable by that
+    same account), the account could simply overwrite the file and inherit
+    CAP_NET_ADMIN itself. install.sh compiles deploy/orca-proxy-firewall-sync
+    (a single, dependency-free, stdlib-only file — see its own module
+    docstring) to a standalone binary and installs it here, root-owned,
+    not writable by the service account — so nothing in the privileged
+    execution path is writable by the account this path is reachable from.
     """
     raw = os.environ.get("ORCA_PROXY_FIREWALL_SCRIPT")
     if raw:

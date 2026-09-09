@@ -16,10 +16,14 @@ curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/orca-proxy/dep
 Or, from an existing checkout: `sudo bash deploy/install.sh`. Either way it
 must run as root — see `deploy/install.sh`'s header comment and design.md's
 "Service installation and firewall-rule lifecycle" section for why (the
-short version: the firewall-sync helper's sudoers entry is only safe if
-nothing in the path it executes is writable by the unprivileged user that
-entry names, which only root can arrange). The service itself still runs
-as your own user (`systemctl --user status orca-proxy.service`), not root.
+short version: it compiles the firewall-sync helper and grants it
+`CAP_NET_ADMIN`/`CAP_NET_RAW` via `setcap`, which is only safe if nothing in
+the resulting binary's own path is writable by the unprivileged user that
+invokes it, which only root can arrange). Requires a C compiler (`cc` or
+`gcc`) and `setcap` (Debian/Ubuntu: `libcap2-bin`) on the host. The service
+itself still runs as your own user (`systemctl --user status
+orca-proxy.service`), not root, and there is no sudoers entry anywhere in
+this design.
 
 Upgrading is the same command, run again. It's a deliberate action, not
 something a background process does for you.
