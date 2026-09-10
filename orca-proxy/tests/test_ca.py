@@ -1,5 +1,19 @@
 from pathlib import Path
 
+from cryptography import x509
+
+
+async def test_ca_certificate_has_subject_key_identifier(client, app):
+    """RFC 5280 4.2.1.2 requires this on every CA certificate; without it,
+    strict TLS clients (OpenSSL 3.2+) reject the chain of every leaf
+    mitmproxy signs off this CA with CERTIFICATE_VERIFY_FAILED: Missing
+    Subject Key Identifier.
+    """
+    resp = await client.get("/api/v1/ca")
+    body = await resp.json()
+    cert = x509.load_pem_x509_certificate(body["certificate_pem"].encode())
+    cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+
 
 async def test_get_ca_returns_public_material_only(client, app):
     resp = await client.get("/api/v1/ca")

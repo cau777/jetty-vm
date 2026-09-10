@@ -47,6 +47,15 @@ def _generate() -> tuple[str, str, str, datetime.datetime, datetime.datetime]:
             ),
             critical=True,
         )
+        # RFC 5280 4.2.1.2: "MUST appear in all conforming CA certificates."
+        # Without it, strict chain validation (OpenSSL 3.2+, seen via Python's
+        # ssl module on a VM) rejects every leaf mitmproxy signs off this CA
+        # with CERTIFICATE_VERIFY_FAILED: Missing Subject Key Identifier --
+        # confirmed in production once firewall enforcement actually started
+        # routing traffic through the proxy for the first time.
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
         .sign(key, hashes.SHA256())
     )
 
