@@ -292,21 +292,17 @@ the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
 
 - It's running in a disposable-feeling but actually persistent Multipass VM
   with full sudo, so the agent doesn't over-hedge on system changes.
-- If GitHub access was requested, `gh` subcommands that go through GitHub's GraphQL endpoint
-  (`api.github.com/graphql`) will fail here — the Rules set up in step 6
-  only cover specific REST paths, and GraphQL isn't one of them. `gh pr
-  create` is the common case that trips this; use the REST equivalent
-  instead:
-  ```bash
-  gh api -X POST repos/<org>/<repo>/pulls \
-      -f title="My PR title" \
-      -f head="my-branch-name" \
-      -f base="main" \
-      -f body="Description here"
-  ```
-- `gh run watch` is another GraphQL-backed exception. Use the installed
-  REST-only replacement `gh-run-watch-rest <run-id>`; it also accepts
-  `--exit-status`, `-i <seconds>`, and `-R <owner/repo>`.
+- If GitHub access was requested, `gh` here is **not** the real GitHub CLI —
+  it's `gh-rest.py` (see step 6), installed at `/usr/local/bin/gh`, which
+  implements the same subcommands (`pr`, `issue`, `workflow`, `run`, `api`,
+  `auth status`) entirely against the REST API, since the Rules set up in
+  step 6 only cover specific REST paths on `api.github.com` and GitHub's
+  GraphQL endpoint (`api.github.com/graphql`) isn't one of them. Day-to-day
+  usage is unchanged (`gh pr create`, `gh issue list`, `gh api ...`, etc. all
+  work as expected). Two operations have no REST equivalent at all in
+  GitHub's API — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready`
+  (marking a draft PR ready for review) — and fail with a clear error instead
+  of silently doing nothing; do those manually in the GitHub web UI.
 
 ## 5. Set up SSH access
 
@@ -533,136 +529,55 @@ multipass exec <vm-name> -- bash -c "
 "
 ```
 
-Install `gh` (credential-free, same as before):
+Install `gh` as `gh-rest.py` — a REST-only reimplementation of the `gh`
+subcommands this project needs, **not** the real GitHub CLI. The reason:
+the real `gh` binary routes several common subcommands (`gh pr create`,
+`gh run watch`, ...) through GitHub's GraphQL endpoint, and the Rules above
+only allow-list specific REST paths on `api.github.com` — GraphQL isn't one
+of them, by design (a Rule that also had to allow-list arbitrary GraphQL
+queries wouldn't meaningfully restrict anything). Rather than keep
+documenting one-off REST workarounds per GraphQL-backed subcommand, this
+installs a `gh` that only ever speaks REST in the first place, so ordinary
+usage (`gh pr create`, `gh issue list`, `gh run watch`, `gh api ...`) just
+works unmodified. It needs `python3` (already installed for node-gyp in step
+4) and `jq` (`--jq` filtering shells out to it rather than reimplementing
+jq's expression language):
 
 ```bash
-multipass exec <vm-name> -- bash -c '
-set -e
-sudo mkdir -p -m 755 /etc/apt/keyrings
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-  | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-sudo apt-get update -qq
-sudo apt-get install -y -qq gh
-'
+multipass exec <vm-name> -- sudo apt-get install -y -qq jq
 ```
 
-Install the REST-only Actions watcher alongside `gh`. Its complete source is
-embedded here so this `SKILL.md` remains standalone:
+Its complete source lives in this Jetty release at `gh-rest/gh-rest.py` —
+read it from the installed release directory rather than a checkout's `main`
+branch, and transfer it the same base64-piped way as the CA cert above
+(sidesteps the same `multipass transfer` snap-confinement permission error):
 
 ```bash
-multipass exec <vm-name> -- sudo tee /usr/local/bin/gh-run-watch-rest >/dev/null <<'GH_RUN_WATCH_REST'
-#!/usr/bin/env bash
-set -euo pipefail
-
-usage() {
-  echo "usage: gh-run-watch-rest [-R OWNER/REPO] [-i SECONDS] [--exit-status] RUN_ID"
-}
-
-repo='repos/{owner}/{repo}'
-interval=3
-exit_status=false
-run_id=''
-
-while (($#)); do
-  case "$1" in
-    -R|--repo)
-      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
-      repo="repos/$2"
-      shift 2
-      ;;
-    -i|--interval)
-      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
-      interval=$2
-      shift 2
-      ;;
-    --exit-status)
-      exit_status=true
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      [[ -z "$run_id" ]] || { usage >&2; exit 2; }
-      run_id=$1
-      shift
-      ;;
-  esac
-done
-
-[[ "$run_id" =~ ^[0-9]+$ ]] || { usage >&2; exit 2; }
-[[ "$interval" =~ ^[1-9][0-9]*$ ]] || {
-  echo "interval must be a positive integer" >&2
-  exit 2
-}
-
-trap 'exit 2' INT
-
-run_endpoint="$repo/actions/runs/$run_id"
-jobs_endpoint="$run_endpoint/jobs?per_page=100"
-
-while :; do
-  run_data=$(
-    gh api "$run_endpoint" \
-      --jq '[.status, (.conclusion // ""), (.name // "workflow"), .html_url] | .[]'
-  )
-  mapfile -t run <<<"$run_data"
-
-  status=${run[0]}
-  conclusion=${run[1]}
-  workflow=${run[2]}
-  url=${run[3]}
-
-  jobs=$(
-    gh api --paginate "$jobs_endpoint" --jq '
-      def mark:
-        if .status != "completed" then
-          if .status == "in_progress" then "*" else "." end
-        elif .conclusion == "success" then "✓"
-        elif .conclusion == "skipped" then "-"
-        else "X"
-        end;
-
-      .jobs[] |
-        "\(mark) \(.name) [\(.conclusion // .status)]",
-        (.steps[]? | "  \(mark) \(.name)")
-    '
-  )
-
-  if [[ -t 1 ]]; then
-    printf '\033[2J\033[H'
-  fi
-  printf '%s — %s\n%s\n\n%s\n' \
-    "$workflow" "${conclusion:-$status}" "$url" "$jobs"
-
-  [[ "$status" == completed ]] && break
-  sleep "$interval"
-done
-
-if [[ "$exit_status" == true && "$conclusion" != success ]]; then
-  exit 1
-fi
-GH_RUN_WATCH_REST
-
-multipass exec <vm-name> -- sudo chmod 0755 /usr/local/bin/gh-run-watch-rest
-multipass exec <vm-name> -- gh-run-watch-rest --help
+JETTY_RELEASE_DIR="$HOME/.local/share/jetty/releases/v1.0.0"  # match step 3's version
+B64=$(base64 -w0 "$JETTY_RELEASE_DIR/gh-rest/gh-rest.py")
+multipass exec <vm-name> -- bash -c "echo '$B64' | base64 -d | sudo tee /usr/local/bin/gh > /dev/null && sudo chmod 0755 /usr/local/bin/gh"
+multipass exec <vm-name> -- gh --help
 ```
 
-`gh-run-watch-rest` polls only
-`GET /repos/{owner}/{repo}/actions/runs/{run_id}` and its `/jobs` child, so
-the repository-scoped `api.github.com` Rule above covers it. It requires an
-explicit run ID; use `gh run list` to find one. Keep the embedded block above
-as its single source of truth rather than copying its body into the global
-agent instructions.
+`gh run watch <run-id>` (accepting `--exit-status`, `-i <seconds>`, and
+`-R <owner/repo>`) is built into this `gh`, polling only
+`GET /repos/{owner}/{repo}/actions/runs/{run_id}` and its `/jobs` child — so
+the repository-scoped `api.github.com` Rule above covers it without a
+separate helper binary.
 
-`gh` needs a global placeholder token too, so it believes it's authenticated
-and sends *an* `Authorization` header for the Rule to overwrite. This is
-safe to set globally now (unlike the old `HTTPS_PROXY` approach) — `GH_TOKEN`
-only affects `gh` itself, not npm/curl/other tools in the VM:
+Two `gh` operations genuinely have no REST equivalent in GitHub's API at
+all — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready` (marking
+a draft PR ready for review), both GraphQL-only mutations — and this `gh`
+fails those loudly with an explanation rather than silently no-op'ing. Do
+those two specifically through the GitHub web UI.
+
+`gh` reads `GH_TOKEN` (falling back to `GITHUB_TOKEN`) but doesn't require
+either to be set — with neither set it sends no `Authorization` header at
+all, which lets unmatched paths fall through to GitHub as a normal anonymous
+request instead of a hard failure. Set a global placeholder anyway, so the
+common case (`gh api repos/<org>/<repo>/...`) always sends *some*
+`Authorization` header for the Rule to overwrite — `GH_TOKEN` only affects
+`gh`, not npm/curl/other tools in the VM:
 
 ```bash
 multipass exec <vm-name> -- bash -c "
@@ -687,7 +602,7 @@ multipass exec <vm-name> -- bash -lc 'gh api user'
 multipass exec <vm-name> -- bash -lc 'git ls-remote <repo-url>'
 ```
 
-`gh auth status` inside the VM will still report the token as invalid —
+`gh auth status` inside the VM will still report as not authenticated —
 still expected and correct, but for a different reason than before: `/user`
 isn't covered by any Allow-with-credential Rule, so it's forwarded
 credential-free by default-Allow rather than being blocked. Don't try to

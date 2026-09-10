@@ -81,6 +81,10 @@ else
   install_source "$SOURCE_DIR"
 fi
 
+GH_REST_SCRIPT="$INSTALL_DIR/gh-rest/gh-rest.py"
+[ -f "$GH_REST_SCRIPT" ] || { echo "Jetty release is missing gh-rest/gh-rest.py." >&2; exit 1; }
+chmod +x "$GH_REST_SCRIPT"
+
 command -v npx > /dev/null || {
   echo "npx is required to install Jetty's agent skill. Install Node.js first." >&2
   exit 1
