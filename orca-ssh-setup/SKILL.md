@@ -394,11 +394,22 @@ curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-api" \
     "action": {"type": "allow_with_credential", "credential": "github-host-login",
                "path_prefix": "/repos/<org>/<repo>", "injection": {"type": "bearer"}}
   }'
-# only if push access was requested — path_prefix MUST include the ".git"
-# suffix: the rule engine's path_prefix match is segment-boundary-aware
-# (matches only on "/" or end-of-string), and git's smart-HTTP client always
-# requests "/<org>/<repo>.git/info/refs" etc., so a prefix of "/<org>/<repo>"
-# (no ".git") never matches and every git push/fetch 401s:
+# only if push access was requested — path_prefix MUST exactly match the
+# request path git's smart-HTTP client actually sends, which is whatever
+# the repo's own `origin` remote says verbatim (git does NOT normalize a
+# ".git"-less remote by appending ".git", nor strip it from one that has
+# it) -- run `git remote get-url origin` in the target repo and mirror it
+# exactly. Rules of thumb: a repo cloned via `git clone https://github.com/
+# <org>/<repo>.git` keeps ".git" in its remote forever, one cloned via
+# `.../<repo>` (no ".git") never gets it added. Getting this wrong is a
+# same-shaped bug either direction, not just the ".git"-missing case: the
+# rule engine's path_prefix match is segment-boundary-aware (matches only
+# on "/" or end-of-string), so "/<org>/<repo>" and "/<org>/<repo>.git" are
+# two different, mutually exclusive prefixes -- whichever one doesn't match
+# the actual remote silently 401s every git push/fetch/pull (falls through
+# to default-Allow passthrough with no credential injected, so it reaches
+# GitHub for real and gets a real "Invalid username or token" back, not an
+# obvious proxy-side error):
 curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-git" \
   -H 'Content-Type: application/json' -d '{
     "priority": <next available>,
