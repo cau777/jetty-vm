@@ -687,6 +687,19 @@ def cmd_run_cancel(args):
 # --------------------------------------------------------------------------
 
 def cmd_api(args):
+    # `gh api graphql` is the generic escape hatch the real `gh` CLI offers
+    # for arbitrary GraphQL queries -- unlike the specific gaps above (pr
+    # merge --auto, pr ready), there's no way to tell here whether a given
+    # query has a REST equivalent, so this can't raise GhError with a
+    # targeted suggestion the way those do. Failing it loudly as an error
+    # would also be misleading: main()'s GhError handler exits 1 and prints
+    # "gh-rest.py: ...", indistinguishable from a real REST failure, when
+    # this never even reached the network. Exiting 0 here means a script
+    # chaining `gh api graphql ... && next-step` doesn't abort on this alone.
+    if args.endpoint.strip("/") == "graphql":
+        print("GraphQL not supported, use REST instead")
+        return
+
     fields = {}
     for pair in args.raw_field or []:
         k, _, v = pair.partition("=")
