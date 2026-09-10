@@ -735,12 +735,15 @@ def cmd_api(args):
 
 
 def cmd_auth_status(args):
-    try:
-        user = request("GET", "user")
-    except GhError as e:
-        print(f"gh-rest.py: not authenticated ({e})")
-        raise SystemExit(1)
-    print(f"Logged in as {user.get('login', '?')}")
+    # No real token ever reaches this VM -- only the specific repo-scoped
+    # paths a Rule covers get one injected -- so a real `GET /user` call
+    # here would always come back "not authenticated" (that endpoint isn't
+    # under any Rule's path_prefix, so it's forwarded with just the
+    # placeholder credential and GitHub rejects it for real). That's
+    # correct, but it reads exactly like something's broken, which sends an
+    # agent down a debugging path chasing a non-issue. Skip the network
+    # call entirely and say what's actually true instead.
+    print("A limited number of GitHub operations are authenticated")
 
 
 # --------------------------------------------------------------------------

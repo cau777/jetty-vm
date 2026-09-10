@@ -613,12 +613,14 @@ multipass exec <vm-name> -- bash -lc 'gh api user'
 multipass exec <vm-name> -- bash -lc 'git ls-remote <repo-url>'
 ```
 
-`gh auth status` inside the VM will still report as not authenticated —
-still expected and correct, but for a different reason than before: `/user`
-isn't covered by any Allow-with-credential Rule, so it's forwarded
-credential-free by default-Allow rather than being blocked. Don't try to
-make `gh auth status` pass; it passing would mean a real token reached the
-VM.
+`gh auth status` inside the VM doesn't query GitHub at all — it never could
+pass: `/user` isn't covered by any Allow-with-credential Rule, so hitting it
+for real would just forward credential-free by default-Allow and come back
+"not authenticated," which reads like something's broken and sends an agent
+chasing a non-issue for no reason. `gh-rest.py` instead prints "A limited
+number of GitHub operations are authenticated" and exits 0, with no request
+sent. Don't try to make it report a real logged-in identity; that would
+mean a real token had reached the VM.
 
 Confirm unrelated traffic is still unaffected — this check matters more now
 than it used to, since DNAT forces *all* of the VM's 80/443 through
