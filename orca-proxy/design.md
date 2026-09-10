@@ -383,8 +383,18 @@ The current design instead compiles `deploy/orca-proxy-firewall-sync` — a
 Nuitka's `--standalone` mode, and grants it `CAP_NET_ADMIN`/`CAP_NET_RAW`
 directly via `setcap cap_net_admin,cap_net_raw+eip`, installed to
 `/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` cleared)
-alongside the libpython it links against (same directory, required by its
-`$ORIGIN` RPATH). There is no sudoers entry anywhere in this design. File
+alongside the libpython it links against (same directory, needed to resolve
+its RPATH). That RPATH can't stay Nuitka's default of `$ORIGIN`, though:
+ld.so ignores `$ORIGIN` (and every other dynamic string token, along with
+`LD_LIBRARY_PATH`/`LD_PRELOAD`) for any binary that carries file
+capabilities — "secure-execution mode" — so a `$ORIGIN`-linked binary fails
+every invocation once `setcap`'d, with "cannot open shared object file" for
+its own libpython (confirmed empirically: works fine uncapped, breaks the
+moment capabilities are granted). install.sh works around this with
+`patchelf --set-rpath /usr/local/sbin`, baking in a literal absolute path
+instead — not a dynamic token, so it's honored even in secure-execution
+mode — before `setcap` ever runs. There is no sudoers entry anywhere in this
+design. File
 capabilities are tied to the file's own inode and are honored regardless of
 which user invokes it — the kernel checks the file's extended attributes at
 `exec`, not the caller's UID — so the security property that matters is

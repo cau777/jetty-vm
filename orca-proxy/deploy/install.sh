@@ -166,6 +166,20 @@ as_user "mkdir -p $(printf '%q' "$BUILD_DIR") \
        --output-filename=orca-proxy-firewall-sync.bin \
        $(printf '%q' "$BUILD_DIR/orca-proxy-firewall-sync.py")"
 
+# Nuitka's --standalone output carries RPATH=\$ORIGIN so it can find its
+# linked libpython alongside itself -- but ld.so ignores \$ORIGIN (and every
+# other dynamic string token) for any binary that ends up with file
+# capabilities, because that's "secure-execution mode" territory, the same
+# rule that also drops LD_LIBRARY_PATH/LD_PRELOAD. setcap is applied below,
+# so without this the binary fails at every invocation once capped, with
+# "cannot open shared object file" for its own libpython -- confirmed
+# empirically after granting CAP_NET_ADMIN/CAP_NET_RAW below. A literal
+# absolute RPATH baked in at build time isn't a dynamic token, so it's
+# honored even in secure-execution mode; FIREWALL_BIN's directory is a fixed
+# constant (never versioned), so hardcoding it here is safe across upgrades.
+as_user "uv run --with patchelf patchelf --set-rpath /usr/local/sbin \
+  $(printf '%q' "$BUILD_DIR/orca-proxy-firewall-sync.dist/orca-proxy-firewall-sync.bin")"
+
 echo "Installing the privileged firewall-sync binary (root-owned, outside $TARGET_USER's home)"
 # --standalone produces a directory (the compiled binary plus the shared
 # libraries it links against, e.g. libpython*.so) rather than a single
