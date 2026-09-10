@@ -461,6 +461,26 @@ if it fails (e.g. running the source file directly rather than the
 with their own non-zero exit, which `reconcile()`/`is_in_sync()` already
 turn into the normal fail-closed "error" status.
 
+`PR_CAP_AMBIENT_RAISE` itself requires the capability already present in
+**both** the calling process's Permitted and Inheritable sets — and
+`setcap`'s `i` flag, despite what its name suggests, does not populate the
+resulting process's Inheritable set on `exec`. Per capabilities(7)'s
+execve(2) transition rules, `P'(inheritable) = P(inheritable)`: the
+Inheritable set is carried over from the *caller* unchanged; a file's `i`
+bit only participates in computing the new *Permitted* set
+(`P(inheritable) & F(inheritable)`). Since orca-proxy's own service process
+(the thing that execs this binary) is fully unprivileged, its Inheritable
+set is empty, so the compiled binary's is too, no matter its own file
+capability flags — confirmed empirically, first surfacing as `could not
+raise CAP 12 into the ambient set (Operation not permitted)` in real
+deployment. The fix (`_add_to_own_inheritable_set()`) is a `capset(2)` call
+that copies these capabilities from the process's own Permitted set into
+its own Inheritable set before the ambient raise — legal without
+`CAP_SETPCAP`, since capabilities(7) permits a process to add to its own
+Inheritable set anything already in its Permitted set. This doesn't widen
+the trust boundary at all; it only makes the already-intended
+Permitted-to-`iptables`-child handoff actually work.
+
 There is also no more argument-pinning. The sudoers entry used to pin the
 exact `--db`/`--bridge`/`--proxy-port` values a `NOPASSWD: /path/to/cmd`
 grant would otherwise let through unpinned — a setcap'd binary has no

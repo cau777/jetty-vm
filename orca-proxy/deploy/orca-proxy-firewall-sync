@@ -99,19 +99,78 @@ _PR_CAP_AMBIENT_RAISE = 2
 _CAP_NET_ADMIN = 12
 _CAP_NET_RAW = 13
 
+# capget(2)/capset(2) -- like prctl's ambient operations, glibc gives these
+# no wrapper (they're meant to be used via libcap, which this file
+# deliberately doesn't depend on -- see the module docstring), so they're
+# invoked as raw syscalls. Numbers and struct layout are x86-64/Linux
+# specific, consistent with the rest of this file's assumptions.
+_SYS_CAPGET = 125
+_SYS_CAPSET = 126
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+
+
+class _CapHeader(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+
+class _CapData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
+
+def _add_to_own_inheritable_set(libc, caps) -> bool:
+    """Copy `caps` into this process's own Inheritable set via capset(2).
+
+    Contrary to what `setcap ...+eip` (see install.sh) suggests, the file's
+    `i` bit does NOT put anything into the resulting process's Inheritable
+    set on exec -- per capabilities(7)'s execve(2) transition rules,
+    P'(inheritable) = P(inheritable), i.e. the Inheritable set is carried
+    over from the *caller* completely unchanged; a file's inheritable flag
+    only participates in computing the new *Permitted* set
+    (P(inheritable) & F(inheritable)). Since the unprivileged process that
+    execs this binary (orca-proxy's own service) has an empty Inheritable
+    set, this process's Inheritable set is empty too, no matter what
+    install.sh's `setcap` flags say -- only Permitted/Effective get
+    populated (via F(permitted)/F(effective) against the process's
+    bounding set). PR_CAP_AMBIENT_RAISE below requires the capability in
+    BOTH Permitted and Inheritable, so without this step it always fails
+    with EPERM.
+
+    This is safe without CAP_SETPCAP: capabilities(7)'s rules for capset(2)
+    allow a process to add to its own Inheritable set anything already
+    present in its own Permitted set, which these are (via setcap's `p`
+    flag). This doesn't broaden what this binary can do -- it only lets it
+    actually hand capabilities it already legitimately holds to the
+    `iptables` children it execs, which was always the intent (see
+    `_raise_ambient_capabilities`'s docstring).
+    """
+    header = _CapHeader(version=_LINUX_CAPABILITY_VERSION_3, pid=0)
+    data = (_CapData * 2)()
+    if libc.syscall(_SYS_CAPGET, ctypes.byref(header), ctypes.byref(data)) != 0:
+        return False
+    for cap in caps:
+        idx, bit = divmod(cap, 32)
+        data[idx].inheritable |= 1 << bit
+    header = _CapHeader(version=_LINUX_CAPABILITY_VERSION_3, pid=0)
+    return libc.syscall(_SYS_CAPSET, ctypes.byref(header), ctypes.byref(data)) == 0
+
 
 def _raise_ambient_capabilities() -> None:
     """Propagate CAP_NET_ADMIN/CAP_NET_RAW into the `iptables` children this
     script execs.
 
     `setcap ...+eip` (see install.sh) puts these capabilities in this
-    binary's own effective/permitted/inheritable sets on exec -- enough for
-    this process to make privileged syscalls itself -- but a plain,
+    binary's own effective/permitted sets on exec -- enough for this
+    process to make privileged syscalls itself -- but a plain,
     non-privileged child process (`iptables`, no file capabilities of its
     own) only inherits capabilities that are also in the parent's *ambient*
     set, which file capabilities clear by default. Raising them here, once,
     before the first `iptables` call, is what makes that inheritance
-    happen.
+    happen. Doing that requires the capability in this process's own
+    Inheritable set first -- see `_add_to_own_inheritable_set`.
 
     Best-effort and non-fatal: if this fails (not actually running from the
     setcap'd binary -- e.g. under test, or a plain source-file invocation),
@@ -121,7 +180,17 @@ def _raise_ambient_capabilities() -> None:
     separate failure mode to handle here.
     """
     libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
-    for cap in (_CAP_NET_ADMIN, _CAP_NET_RAW):
+    caps = (_CAP_NET_ADMIN, _CAP_NET_RAW)
+    if not _add_to_own_inheritable_set(libc, caps):
+        errno = ctypes.get_errno()
+        print(
+            "orca-proxy-firewall-sync: could not add CAP_NET_ADMIN/CAP_NET_RAW to "
+            f"this process's own inheritable set ({os.strerror(errno)}); iptables "
+            "calls will fail closed if this process isn't already fully privileged",
+            file=sys.stderr,
+        )
+        return
+    for cap in caps:
         if libc.prctl(_PR_CAP_AMBIENT, _PR_CAP_AMBIENT_RAISE, cap, 0, 0) != 0:
             errno = ctypes.get_errno()
             print(
