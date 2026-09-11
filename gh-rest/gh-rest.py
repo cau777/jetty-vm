@@ -416,6 +416,52 @@ def cmd_pr_diff(args):
     sys.stdout.write(diff.decode(errors="replace"))
 
 
+def cmd_pr_checks(args):
+    # The real `gh pr checks` gets a unified view via GraphQL. REST needs two
+    # calls to cover the same ground: the Checks API (GitHub Actions and
+    # other Checks-API apps) and the legacy Commit Status API (third-party
+    # CI that predates Checks, e.g. some CircleCI/Travis setups) -- a repo's
+    # checks can come from either, sometimes both.
+    owner, repo = resolve_repo(args.repo)
+    pr = request("GET", f"repos/{owner}/{repo}/pulls/{args.number}")
+    sha = pr["head"]["sha"]
+
+    rows = []  # (name, state, url)
+
+    for cr in paged_list(f"repos/{owner}/{repo}/commits/{sha}/check-runs"):
+        if cr["status"] != "completed":
+            state = "pending"
+        else:
+            conclusion = cr.get("conclusion")
+            if conclusion == "success":
+                state = "pass"
+            elif conclusion in ("failure", "timed_out", "action_required", "cancelled"):
+                state = "fail"
+            else:
+                state = "skipping"
+        rows.append((cr["name"], state, cr.get("html_url") or cr.get("details_url") or ""))
+
+    status = request("GET", f"repos/{owner}/{repo}/commits/{sha}/status")
+    for s in status.get("statuses", []):
+        if s["state"] == "success":
+            state = "pass"
+        elif s["state"] in ("failure", "error"):
+            state = "fail"
+        else:
+            state = "pending"
+        rows.append((s["context"], state, s.get("target_url") or ""))
+
+    if not rows:
+        print(f"no checks reported on the '{pr['head']['ref']}' branch")
+        return
+
+    for name, state, url in rows:
+        print(f"{name}\t{state}\t{url}")
+
+    if any(state == "fail" for _, state, _ in rows):
+        raise SystemExit(1)
+
+
 def cmd_pr_checkout(args):
     branch = f"pr-{args.number}"
     subprocess.run(["git", "fetch", "origin", f"pull/{args.number}/head:{branch}"], check=True)
@@ -841,6 +887,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = pr.add_parser("diff"); add_repo_flag(c); c.add_argument("number")
     c.set_defaults(func=cmd_pr_diff)
+
+    c = pr.add_parser("checks"); add_repo_flag(c); c.add_argument("number")
+    c.set_defaults(func=cmd_pr_checks)
 
     c = pr.add_parser("checkout"); c.add_argument("number")
     c.set_defaults(func=cmd_pr_checkout)
