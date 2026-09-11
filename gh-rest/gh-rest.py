@@ -156,7 +156,8 @@ def request(
     include=True prints the HTTP status line and response headers (one
     envelope per page fetched) before the body, like `curl -i`.
     """
-    url = path if path.startswith("http://") or path.startswith("https://") else API_ROOT + "/" + path.lstrip("/")
+    base_url = path if path.startswith("http://") or path.startswith("https://") else API_ROOT + "/" + path.lstrip("/")
+    url = base_url
     if params:
         qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
         if qs:
@@ -237,7 +238,17 @@ def request(
         nxt = _next_link(link)
         if not nxt:
             return merged
-        url, data, method = nxt, None, "GET"
+        # GitHub's Link header sometimes rewrites the path for later pages
+        # (e.g. actions/workflows/.../runs comes back as
+        # /repositories/{id}/actions/workflows/.../runs on page 2+) even
+        # though it's the same resource. A credential-injecting proxy
+        # allow-listing by the original /repos/{owner}/{repo} path prefix
+        # won't recognize the rewritten one and 401s. Keep hitting the
+        # endpoint we were actually asked for; only the query string (page=
+        # etc.) needs to change between pages.
+        next_query = urllib.parse.urlsplit(nxt).query
+        url = base_url + (("?" + next_query) if next_query else "")
+        data, method = None, "GET"
 
 
 def paged_list(path: str, params: dict | None = None) -> list:
