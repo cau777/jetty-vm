@@ -93,6 +93,42 @@ def current_branch() -> str:
 # HTTP
 # --------------------------------------------------------------------------
 
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Some GitHub endpoints (notably .../actions/jobs/{id}/logs) 302 to a
+    signed Azure Blob Storage URL that carries its own auth in the query
+    string. urllib's default redirect handling forwards all original request
+    headers to the new host, so our GitHub Authorization/API-version headers
+    ride along to *.blob.core.windows.net -- which doesn't understand a
+    GitHub Bearer token and 401s ("InvalidAuthenticationInfo") instead of
+    serving the logs. Strip those headers whenever a redirect crosses hosts."""
+
+    STRIP_ON_CROSS_HOST = {"authorization", "x-github-api-version"}
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        old_host = urllib.parse.urlsplit(req.full_url).netloc
+        new_host = urllib.parse.urlsplit(newurl).netloc
+        if new_host != old_host:
+            for key in list(new_req.headers):
+                if key.lower() in self.STRIP_ON_CROSS_HOST:
+                    del new_req.headers[key]
+        return new_req
+
+
+_OPENER = urllib.request.build_opener(_SafeRedirectHandler)
+
+
+def _print_http_envelope(status: int, reason: str, version: int | None, headers_msg) -> None:
+    """Mimic `curl -i`/real `gh api -i`: a status line, then each response
+    header on its own line, then the blank line email.message.Message's
+    str() already appends -- so the caller's body print lands right after."""
+    v = version or 11
+    print(f"HTTP/{v // 10}.{v % 10} {status} {reason}")
+    sys.stdout.write(str(headers_msg))
+
+
 def _next_link(link_header: str) -> str | None:
     for part in link_header.split(","):
         segs = part.split(";")
@@ -112,10 +148,13 @@ def request(
     headers: dict | None = None,
     raw: bool = False,
     paginate: bool = False,
+    include: bool = False,
 ):
     """Issue one REST call (or, with paginate=True, follow every Link: next
     page and merge array results together). Returns parsed JSON, raw bytes
     (raw=True), or a merged list (paginate=True on a list-returning endpoint).
+    include=True prints the HTTP status line and response headers (one
+    envelope per page fetched) before the body, like `curl -i`.
     """
     url = path if path.startswith("http://") or path.startswith("https://") else API_ROOT + "/" + path.lstrip("/")
     if params:
@@ -148,10 +187,14 @@ def request(
     while True:
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with _OPENER.open(req) as resp:
                 raw_body = resp.read()
                 link = resp.headers.get("Link", "")
+                if include:
+                    _print_http_envelope(resp.status, resp.reason, resp.version, resp.headers)
         except urllib.error.HTTPError as e:
+            if include:
+                _print_http_envelope(e.code, e.reason, None, e.headers)
             err_body = e.read().decode(errors="replace")
             try:
                 msg = json.loads(err_body).get("message", err_body)
@@ -728,7 +771,7 @@ def cmd_api(args):
         headers[k.strip()] = v.strip()
 
     body = fields or None
-    result = request(method, args.endpoint, body=body, headers=headers, paginate=args.paginate)
+    result = request(method, args.endpoint, body=body, headers=headers, paginate=args.paginate, include=args.include)
     if args.silent:
         return
     emit(result, args.jq)
@@ -893,6 +936,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--jq")
     c.add_argument("--paginate", action="store_true")
     c.add_argument("--silent", action="store_true")
+    c.add_argument("-i", "--include", action="store_true")
     c.set_defaults(func=cmd_api)
 
     # auth
