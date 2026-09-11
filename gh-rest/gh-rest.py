@@ -207,7 +207,16 @@ def request(
         if raw:
             return raw_body
 
-        parsed = json.loads(raw_body) if raw_body.strip() else None
+        if not raw_body.strip():
+            parsed = None
+        else:
+            try:
+                parsed = json.loads(raw_body)
+            except json.JSONDecodeError:
+                # Some endpoints (e.g. actions/jobs/{id}/logs, redirected to
+                # a Blob Storage URL) return plain text, not JSON. Fall back
+                # to the decoded text instead of blowing up on it.
+                parsed = raw_body.decode(errors="replace")
 
         if not paginate:
             return parsed
