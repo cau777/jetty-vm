@@ -14,9 +14,10 @@
 # front of api.github.com has something to overwrite.
 #
 # Known REST gaps (GitHub exposes these only via GraphQL, so there is no
-# faithful REST implementation): `pr merge --auto` (enabling auto-merge) and
-# `pr ready` (marking a draft PR ready for review). Both fail loudly with a
-# clear explanation instead of silently no-op'ing.
+# faithful REST implementation): `pr merge --auto` (enabling auto-merge) fails
+# loudly with a clear explanation instead of silently no-op'ing. `pr ready`
+# (marking a draft PR ready for review) instead prints the PR link and
+# manual instructions and exits 0, since scripts commonly chain on it.
 #
 # --jq shells out to the system `jq` binary (apt-get install -y jq) rather
 # than reimplementing jq's expression language.
@@ -544,11 +545,20 @@ def cmd_pr_reopen(args):
 
 
 def cmd_pr_ready(args):
-    raise GhError(
+    # Unlike the other REST gaps here, this one can't fail loudly: gh-rest.py
+    # is a drop-in for scripts that expect `gh pr ready && next-step` to
+    # proceed once the PR is marked ready. Exiting non-zero would abort those
+    # scripts on something that isn't really an error condition -- so instead
+    # explain the gap and how to work around it, and exit 0.
+    owner, repo = resolve_repo(args.repo)
+    pr = request("GET", f"repos/{owner}/{repo}/pulls/{args.number}")
+    print(
         "marking a PR ready for review has no REST endpoint — GitHub only "
         "exposes it via the GraphQL markPullRequestReadyForReview mutation, "
-        "which this proxy setup cannot reach. Use the GitHub web UI instead."
+        "which this proxy setup cannot reach."
     )
+    print(f"Mark it ready manually: {pr['html_url']}")
+    print('On that page, click "Ready for review".')
 
 
 # --------------------------------------------------------------------------
