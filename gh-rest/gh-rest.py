@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Callable
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -150,12 +151,19 @@ def request(
     raw: bool = False,
     paginate: bool = False,
     include: bool = False,
+    limit: int | None = None,
+    keep: Callable[[dict], bool] | None = None,
 ):
     """Issue one REST call (or, with paginate=True, follow every Link: next
     page and merge array results together). Returns parsed JSON, raw bytes
     (raw=True), or a merged list (paginate=True on a list-returning endpoint).
     include=True prints the HTTP status line and response headers (one
     envelope per page fetched) before the body, like `curl -i`.
+
+    limit, with paginate=True, stops fetching further pages once `merged`
+    holds at least `limit` items worth keeping (all of them, or only the
+    ones `keep` accepts) — instead of always walking every page of the
+    endpoint's full history before the caller truncates client-side.
     """
     base_url = path if path.startswith("http://") or path.startswith("https://") else API_ROOT + "/" + path.lstrip("/")
     url = base_url
@@ -236,6 +244,11 @@ def request(
         else:
             return parsed
 
+        if limit is not None:
+            have = len(merged) if keep is None else sum(1 for i in merged if keep(i))
+            if have >= limit:
+                return merged
+
         nxt = _next_link(link)
         if not nxt:
             return merged
@@ -252,14 +265,24 @@ def request(
         data, method = None, "GET"
 
 
-def paged_list(path: str, params: dict | None = None) -> list:
+def paged_list(
+    path: str,
+    params: dict | None = None,
+    limit: int | None = None,
+    keep: Callable[[dict], bool] | None = None,
+) -> list:
     """GET an endpoint that returns a plain JSON array, following the Link:
     rel="next" header rather than incrementing ?page= ourselves — some
     large/old GitHub datasets (e.g. very active issue trackers) reject
-    offset-style ?page= pagination outright and require this instead."""
+    offset-style ?page= pagination outright and require this instead.
+
+    Pass `limit` (and, if the caller filters the results, the same `keep`
+    predicate) so a bounded request — e.g. `gh run list --limit 5` — stops
+    once enough items are in hand rather than always paginating through an
+    endpoint's entire history first."""
     params = dict(params or {})
-    params.setdefault("per_page", 100)
-    result = request("GET", path, params=params, paginate=True)
+    params.setdefault("per_page", min(limit, 100) if limit else 100)
+    result = request("GET", path, params=params, paginate=True, limit=limit, keep=keep)
     return result if isinstance(result, list) else []
 
 
@@ -379,6 +402,7 @@ def cmd_pr_list(args):
         items = paged_list(
             f"repos/{owner}/{repo}/pulls",
             params={"state": args.state, "base": args.base},
+            limit=args.limit,
         )
         items = items[: args.limit]
     for it in items:
@@ -590,11 +614,14 @@ def cmd_issue_list(args):
         result = request("GET", "search/issues", params={"q": " ".join(q), "per_page": args.limit})
         items = result.get("items", [])
     else:
+        is_issue = lambda i: "pull_request" not in i
         items = paged_list(
             f"repos/{owner}/{repo}/issues",
             params={"state": args.state, "labels": args.label or None, "assignee": args.assignee or None, "creator": args.author or None},
+            limit=args.limit,
+            keep=is_issue,
         )
-        items = [i for i in items if "pull_request" not in i][: args.limit]
+        items = [i for i in items if is_issue(i)][: args.limit]
     for it in items:
         print(f"#{it['number']}\t{it['title']}\t{it['state']}")
 
@@ -722,7 +749,7 @@ def cmd_run_list(args):
         path = f"repos/{owner}/{repo}/actions/workflows/{args.workflow}/runs"
     else:
         path = f"repos/{owner}/{repo}/actions/runs"
-    runs = paged_list(path, params={"branch": args.branch, "status": args.status})[: args.limit]
+    runs = paged_list(path, params={"branch": args.branch, "status": args.status}, limit=args.limit)[: args.limit]
     for r in runs:
         print(f"{r['id']}\t{r['name']}\t{r['status']}\t{r.get('conclusion') or ''}\t{r['head_branch']}")
 
