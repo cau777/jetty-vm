@@ -1,0 +1,118 @@
+diff --git a/pkg/services/forwarder/jetty.go b/pkg/services/forwarder/jetty.go
+new file mode 100644
+index 0000000..7e060e7
+--- /dev/null
++++ b/pkg/services/forwarder/jetty.go
+@@ -0,0 +1,76 @@
++package forwarder
++
++// PROTOTYPE (Jetty): egress policy hook for the user-mode network.
++//
++// Every guest TCP connection already terminates in this (unprivileged) host
++// process. With JETTY_PROXY set, connections to ports 80/443 are handed to
++// that explicit proxy via HTTP CONNECT to the guest's *original* destination,
++// tagged with this network's VM identity (JETTY_VM) in Proxy-Authorization.
++// No host netfilter is involved, and the guest cannot pick a source address
++// that escapes this code path.
++
++import (
++	"bufio"
++	"encoding/base64"
++	"fmt"
++	"net"
++	"net/http"
++	"os"
++
++	log "github.com/sirupsen/logrus"
++)
++
++func jettyEnabled() bool { return os.Getenv("JETTY_PROXY") != "" }
++
++func jettyIsWebPort(port uint16) bool { return port == 80 || port == 443 }
++
++type bufferedConn struct {
++	net.Conn
++	r *bufio.Reader
++}
++
++func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
++
++// jettyDial decides where a guest TCP connection to dst actually goes.
++// The returned error makes the forwarder answer the guest's SYN with RST.
++func jettyDial(dstIP string, dstPort uint16) (net.Conn, error) {
++	dst := net.JoinHostPort(dstIP, fmt.Sprint(dstPort))
++	if !jettyEnabled() {
++		return net.Dial("tcp", dst)
++	}
++	if ip := net.ParseIP(dstIP); ip != nil && ip.IsLoopback() {
++		// Lima NATs the gateway IP to host 127.0.0.1; never let the guest reach
++		// host-loopback services (orca-proxy's Management API lives there).
++		log.Warnf("jetty: refused %s (host loopback)", dst)
++		return nil, fmt.Errorf("jetty: loopback refused")
++	}
++	if !jettyIsWebPort(dstPort) {
++		if os.Getenv("JETTY_OTHER") == "deny" {
++			log.Infof("jetty: denied non-web %s", dst)
++			return nil, fmt.Errorf("jetty: non-web denied")
++		}
++		return net.Dial("tcp", dst)
++	}
++
++	conn, err := net.Dial("tcp", os.Getenv("JETTY_PROXY"))
++	if err != nil {
++		log.Warnf("jetty: proxy unreachable, failing closed for %s: %v", dst, err)
++		return nil, err
++	}
++	auth := base64.StdEncoding.EncodeToString([]byte(os.Getenv("JETTY_VM") + ":x"))
++	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", dst, dst, auth)
++	br := bufio.NewReader(conn)
++	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
++	if err != nil || resp.StatusCode != http.StatusOK {
++		conn.Close()
++		log.Warnf("jetty: proxy refused CONNECT %s: %v %v", dst, err, resp)
++		return nil, fmt.Errorf("jetty: CONNECT failed")
++	}
++	log.Infof("jetty: %s -> proxy (vm=%s)", dst, os.Getenv("JETTY_VM"))
++	return &bufferedConn{Conn: conn, r: br}, nil
++}
++
++// jettyDropUDP blocks QUIC/HTTP3 so clients fall back to TCP 443 (and thus the proxy).
++func jettyDropUDP(dstPort uint16) bool {
++	return jettyEnabled() && jettyIsWebPort(dstPort)
++}
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index ae18ada..0a4d108 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -2,7 +2,6 @@ package forwarder
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 	"net"
+ 	"sync"
+ 
+@@ -31,7 +30,7 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 			localAddress = replaced
+ 		}
+ 		natLock.Unlock()
+-		outbound, err := net.Dial("tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)))
++		outbound, err := jettyDial(localAddress.String(), r.ID().LocalPort)
+ 		if err != nil {
+ 			log.Tracef("net.Dial() = %v", err)
+ 			r.Complete(true)
+diff --git a/pkg/services/forwarder/udp.go b/pkg/services/forwarder/udp.go
+index 7b00312..f6f2616 100644
+--- a/pkg/services/forwarder/udp.go
++++ b/pkg/services/forwarder/udp.go
+@@ -22,6 +22,10 @@ func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 			return
+ 		}
+ 
++		if jettyDropUDP(r.ID().LocalPort) {
++			return
++		}
++
+ 		natLock.Lock()
+ 		if replaced, ok := nat[localAddress]; ok {
+ 			localAddress = replaced
