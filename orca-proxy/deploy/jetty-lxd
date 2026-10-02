@@ -82,6 +82,8 @@ next_ip() {
 }
 
 cmd_setup() {
+  # lxc's create commands read YAML from any non-terminal stdin and block on it.
+  exec </dev/null
   command -v lxc >/dev/null || die "LXD is not installed (snap install lxd && lxd init --auto)"
   [ -x "$ORCA_PROXY_PYTHON" ] || die "orca-proxy is not installed ($ORCA_PROXY_PYTHON missing); run its deploy/install.sh first"
 
@@ -146,6 +148,7 @@ cmd_launch() {
 
   local ip mac
   ip=$(next_ip)
+  exec </dev/null   # see cmd_setup
   lx init "$image" "$name" --vm -c limits.cpu="$cpus" -c limits.memory="$memory" -d root,size="$disk"
   lx config device add "$name" eth0 nic network="$PRIV_NET" ipv4.address="$ip" \
     security.ipv4_filtering=true security.ipv6_filtering=true security.mac_filtering=true \
