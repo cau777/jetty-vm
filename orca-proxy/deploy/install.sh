@@ -7,6 +7,12 @@ set -euo pipefail
 #   bash deploy/install.sh                          (from an existing checkout)
 #   curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/orca-proxy/deploy/install.sh | bash
 #
+# ORCA_PROXY_INSTANCE (default orca-proxy) names the service, data dir
+# (~/.<instance>) and install dir, so this can run beside an older install
+# (e.g. the Multipass-era one). ORCA_PROXY_MANAGEMENT_PORT sets its API port.
+# The install writes ~/.<instance>/jetty.env; source it before running
+# deploy/jetty-lxd so that tool talks to this instance.
+#
 # Nothing here needs privileges. Agent VMs reach the proxy through the Jetty
 # gateway VM's WireGuard tunnel (deploy/jetty-lxd), so there is no host
 # firewall to manage and no capability-bearing helper to install.
@@ -46,11 +52,13 @@ else
 fi
 
 VERSION="${ORCA_PROXY_VERSION:-$(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)}"
-INSTALL_DIR="$TARGET_HOME/.local/share/orca-proxy/$VERSION"
-DATA_DIR="$TARGET_HOME/.orca-proxy"
+INSTANCE="${ORCA_PROXY_INSTANCE:-orca-proxy}"
+PORT="${ORCA_PROXY_MANAGEMENT_PORT:-8080}"
+INSTALL_DIR="$TARGET_HOME/.local/share/$INSTANCE/$VERSION"
+DATA_DIR="$TARGET_HOME/.$INSTANCE"
 CURRENT_LINK="$DATA_DIR/current"
 UNIT_DIR="$TARGET_HOME/.config/systemd/user"
-UNIT_PATH="$UNIT_DIR/orca-proxy.service"
+UNIT_PATH="$UNIT_DIR/$INSTANCE.service"
 
 if [ -e "$INSTALL_DIR" ]; then
   echo "!! $INSTALL_DIR already exists -- refusing to overwrite an existing versioned install" >&2
@@ -71,14 +79,27 @@ as_user "ln -sfn $(printf '%q' "$INSTALL_DIR/source/.venv") $(printf '%q' "$INST
 # version, so it's copied to one fixed spot per versioned install instead.
 cp "$INSTALL_DIR/source/src/orca_proxy/proxy_addon.py" "$INSTALL_DIR/proxy_addon.py"
 
-echo "Writing systemd user unit"
-install -m 0644 "$REPO_DIR/deploy/orca-proxy.service" "$UNIT_PATH"
+echo "Writing systemd user unit $INSTANCE.service"
+sed -e "s#%h/\.orca-proxy/#%h/.$INSTANCE/#g" \
+    -e "s#^\[Service\]\$#[Service]\nEnvironment=ORCA_PROXY_HOME=%h/.$INSTANCE\nEnvironment=ORCA_PROXY_MANAGEMENT_PORT=$PORT#" \
+    "$REPO_DIR/deploy/orca-proxy.service" > "$UNIT_PATH"
+chmod 0644 "$UNIT_PATH"
+
+cat > "$DATA_DIR/jetty.env" <<EOF
+# Source before running jetty-lxd so it uses this orca-proxy instance.
+export ORCA_PROXY_HOME=$DATA_DIR
+export ORCA_PROXY_MANAGEMENT_PORT=$PORT
+export ORCA_PROXY_SERVICE=$INSTANCE.service
+export ORCA_PROXY_PYTHON=$CURRENT_LINK/venv/bin/python
+JL=$CURRENT_LINK/source/deploy/jetty-lxd
+API=http://127.0.0.1:$PORT/api/v1
+EOF
 
 # Atomic repoint — the only step that changes what "current" (and therefore
 # the systemd unit) actually points at.
 as_user "ln -sfn $(printf '%q' "$INSTALL_DIR") $(printf '%q' "$CURRENT_LINK")"
 
-echo "Starting orca-proxy.service"
+echo "Starting $INSTANCE.service"
 # Lets the user service run without a login session; polkit allows this
 # for one's own account by default.
 loginctl enable-linger "$TARGET_USER" || echo "!! could not enable linger; orca-proxy will only run while $TARGET_USER is logged in" >&2
@@ -88,7 +109,7 @@ loginctl enable-linger "$TARGET_USER" || echo "!! could not enable linger; orca-
 # started) despite `current` having just been repointed above -- silently
 # serving stale logic. `restart` unconditionally guarantees
 # the new version is actually what's running.
-as_user "systemctl --user daemon-reload && systemctl --user enable orca-proxy.service && systemctl --user restart orca-proxy.service"
+as_user "systemctl --user daemon-reload && systemctl --user enable $INSTANCE.service && systemctl --user restart $INSTANCE.service"
 
 # The tunnel listener binds the host's address on jetty-lxd's uplink bridge;
 # before `jetty-lxd setup` has created it the unit just keeps retrying.
@@ -98,8 +119,8 @@ if ! ip -4 -o addr show 2>/dev/null | grep -q ' 10\.201\.0\.1/'; then
 fi
 
 sleep 2
-as_user "systemctl --user is-active --quiet orca-proxy.service" || {
-  as_user "systemctl --user status orca-proxy.service --no-pager --lines=20" || true
+as_user "systemctl --user is-active --quiet $INSTANCE.service" || {
+  as_user "systemctl --user status $INSTANCE.service --no-pager --lines=20" || true
   echo "orca-proxy failed to start -- resolve before continuing" >&2
   exit 1
 }

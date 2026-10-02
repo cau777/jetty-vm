@@ -35,6 +35,7 @@ TUNNEL_PORT=51820   # must match deploy/orca-proxy.service
 GW_IMAGE=ubuntu:24.04
 API=http://127.0.0.1:${ORCA_PROXY_MANAGEMENT_PORT:-8080}/api/v1
 ORCA_PROXY_PYTHON=${ORCA_PROXY_PYTHON:-$HOME/.orca-proxy/current/venv/bin/python}
+ORCA_PROXY_SERVICE=${ORCA_PROXY_SERVICE:-orca-proxy.service}   # see ~/.<instance>/jetty.env
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 LXC=(lxc --project "$PROJECT")
@@ -98,7 +99,7 @@ cmd_setup() {
 
   # The proxy's tunnel listener binds $UP_ADDR, which exists only now; skip
   # the unit's restart backoff if it is still retrying.
-  systemctl --user is-active --quiet orca-proxy.service 2>/dev/null || systemctl --user restart orca-proxy.service 2>/dev/null || true
+  systemctl --user is-active --quiet "$ORCA_PROXY_SERVICE" 2>/dev/null || systemctl --user restart "$ORCA_PROXY_SERVICE" 2>/dev/null || true
 
   if ! exists "$GW"; then
     lx init "$GW_IMAGE" "$GW" --vm -c limits.cpu=1 -c limits.memory=1GiB -d root,size=8GiB
