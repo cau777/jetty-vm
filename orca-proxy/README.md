@@ -12,8 +12,18 @@ here needs root, a capability-bearing helper, or host firewall rules.
 
 ```bash
 bash deploy/install.sh              # from a checkout, as your own user
-deploy/jetty-lxd setup              # LXD project, networks and gateway VM
-deploy/jetty-lxd launch my-vm       # an agent VM, registered and trusting the CA
+. ~/.orca-proxy/jetty.env           # sets $JL and $API for this instance
+"$JL" setup                         # LXD project, networks and gateway VM
+"$JL" launch my-vm                  # an agent VM, registered and trusting the CA
+```
+
+To install beside another orca-proxy (for example a Multipass-era one), give
+it its own instance name and port; everything else follows from
+`~/.<instance>/jetty.env`:
+
+```bash
+ORCA_PROXY_INSTANCE=orca-proxy-lxd ORCA_PROXY_MANAGEMENT_PORT=18080 bash deploy/install.sh
+. ~/.orca-proxy-lxd/jetty.env
 ```
 
 `install.sh` installs a versioned copy under `~/.local/share/orca-proxy/` and a
