@@ -385,15 +385,21 @@ per-VM cleanup in v1.
 
 ## Service installation (#12)
 
-Blue-green deployment, entirely unprivileged:
-- `~/.local/share/orca-proxy/<version>/` — an immutable, versioned,
-  `uv sync`-locked install (source copied, not symlinked, so a later working-tree
-  change can't retroactively affect a running version).
-- `~/.orca-proxy/current` — a symlink, the only thing an upgrade repoints.
-- systemd **user** unit (`%h`-relative paths, no root service), `orca-proxy.service`.
-  Its tunnel listener binds `10.201.0.1`, which exists once `jetty-lxd setup`
-  has created the uplink network; until then `Restart=` keeps retrying.
-- `deploy/install.sh` refuses to run as root. An earlier design compiled a
+Blue-green deployment, entirely unprivileged, done by Jetty's top-level
+`install.sh` (there is no separate proxy installer):
+- `~/.local/share/jetty/releases/<version>/` — the verified release bundle,
+  with `orca-proxy/.venv` created by `uv sync`. Never modified once installed.
+- `~/.local/share/jetty/current` — a symlink, the only thing an upgrade or
+  `--rollback <version>` repoints.
+- `~/.<instance>/` (default `~/.orca-proxy`) — state: databases, CA, tunnel
+  keys. Untouched by upgrades.
+- systemd **user** unit `<instance>.service`, written by the installer with
+  paths through `current`. Its tunnel listener binds `10.201.0.1`, which
+  exists once `jetty-lxd setup` has created the uplink network; until then
+  `Restart=` keeps retrying.
+- `~/.local/share/jetty/jetty.env` — the instance's settings, read by
+  `jetty-lxd` and sourced by the skill.
+- The installer refuses to run as root. An earlier design compiled a
   firewall-sync helper with Nuitka and granted it `CAP_NET_ADMIN` via
   `setcap`, which needed a root install; the gateway transport removed it.
 - 53/tcp+udp / 853 (DNS / DNS-over-TLS) governance was considered and

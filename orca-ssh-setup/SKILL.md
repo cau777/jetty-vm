@@ -86,8 +86,9 @@ Only proceed to provisioning once these are settled.
 
 ## 3. Set up the host-side orca-proxy service and register Credentials
 
-Skip this step entirely if step 2 established the VM needs no coding-agent
-harness and no GitHub access.
+Always do 3a and 3b: every Jetty VM depends on orca-proxy and the gateway.
+Skip 3c and 3d if step 2 established the VM needs no coding-agent harness and
+no GitHub access.
 
 Coding-agent and GitHub credentials must **not** be baked into the VM — a
 live provider session sitting on a machine that an agent runs with full sudo
@@ -100,55 +101,41 @@ the Jetty gateway VM, which sends all their outbound 80/443 into orca-proxy
 live Credential Value only into requests matching an explicit Rule. It runs once per *machine* (share it across every project
 VM, not per project).
 
-**3a. Check for an existing installation first** — it may already be running
-from a previous project:
+**3a. Load the installed settings.** Jetty's installer sets up orca-proxy
+together with this skill, and records its settings in one file:
 
 ```bash
-for f in ~/.orca-proxy*/jetty.env; do [ -f "$f" ] && echo "$f"; done
-systemctl --user list-units --all 'orca-proxy*' --no-pager
-curl -sS http://127.0.0.1:8080/readyz
+. ~/.local/share/jetty/jetty.env && curl -fsS "${API%/api/v1}/readyz"
 ```
 
-- **A `jetty.env` exists:** an LXD-mode install is already there. Source it
-  (`. ~/.orca-proxy/jetty.env`, or whichever file the loop printed) and skip
-  to 3c. Do not reinstall or restart a service that may already be enforcing
-  other projects' VMs.
-- **`orca-proxy.service` is active but there is no `jetty.env`, or `/readyz`
-  shows `firewall_synced`:** that is the older Multipass-era proxy. It owns
-  `~/.orca-proxy` and port 8080, and other Multipass VMs depend on it. Do not
-  replace or restart it. Install the LXD mode **beside** it as a separate
-  instance (3b, side-by-side form), after telling the user.
-- **Nothing installed:** do a default install (3b).
+`jetty.env` sets `$API` (the proxy's Management API), `$JL` (the `jetty-lxd`
+tool), `$JETTY_RELEASE_DIR` (the installed release) and the variables
+`jetty-lxd` needs. **Source it in every shell you use for the rest of this
+procedure**; every command below relies on it.
 
-**3b. Install it.** Nothing in the install needs root, and it must not be run
-with sudo. Use the persisted release source matching the installed skill's
-version file — never a checkout's `main` branch or a mutable raw-GitHub URL:
+On a first install `/readyz` may not answer yet: the proxy starts once step
+4's `setup` creates the Jetty network. That is fine; continue.
+
+**3b. If `jetty.env` is missing**, orca-proxy isn't installed (this skill was
+installed some other way, or by an older Jetty). Stop and hand the user the
+installer command; it runs as their own user, without sudo:
 
 ```bash
-JETTY_RELEASE_DIR="$HOME/.local/share/jetty/releases/v1.0.0"
-INSTALL="$JETTY_RELEASE_DIR/orca-proxy/deploy/install.sh"
-
-# Default: service orca-proxy, data ~/.orca-proxy, API on port 8080.
-ORCA_PROXY_VERSION=$(basename "$JETTY_RELEASE_DIR") bash "$INSTALL"
-. ~/.orca-proxy/jetty.env
-
-# Side by side with a Multipass-era install: its own service, data dir and port.
-ORCA_PROXY_VERSION=$(basename "$JETTY_RELEASE_DIR") ORCA_PROXY_INSTANCE=orca-proxy-lxd \
-  ORCA_PROXY_MANAGEMENT_PORT=18080 bash "$INSTALL"
-. ~/.orca-proxy-lxd/jetty.env
+curl -fsSL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-install.sh | bash
 ```
 
-If the skill was installed by another method and that directory is absent, ask
-the user to install a Jetty release first; do not substitute an unpinned source.
+Before that, check for an older, Multipass-era proxy (`systemctl --user
+is-active orca-proxy.service`, or `/readyz` on port 8080 reporting
+`firewall_synced`). Other Multipass VMs depend on it, and the default install
+would replace it. In that case give the user the side-by-side form instead,
+which leaves it alone:
 
-`jetty.env` sets `$API` (this instance's Management API), `$JL` (the
-`jetty-lxd` tool) and the variables `jetty-lxd` needs to talk to this
-instance. **Source it in every shell you use for the rest of this
-procedure**; every command below relies on `$API` and `$JL`. Only one
-LXD-mode instance can exist per host, since they share the Jetty network.
+```bash
+curl -fsSL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-install.sh \
+  | bash -s -- --instance orca-proxy-lxd --port 18080
+```
 
-On a first install the installer says the service starts once the Jetty
-network exists; step 4 creates it. Confirm readiness after step 4's `setup`.
+Upgrades are the same command with no flags; they keep the instance and port.
 
 **3c. Ensure the needed Credentials exist.** Credential creation is a plain
 `PUT` the Provisioning Agent issues directly — it is not gated behind the
@@ -158,7 +145,7 @@ Management API, not a separate mechanism. Read the source-of-truth catalog
 hardcoding command strings here:
 
 ```bash
-CATALOG="$ORCA_PROXY_HOME/current/source/src/orca_proxy/static/quick-add-catalog.json"
+CATALOG="$JETTY_RELEASE_DIR/orca-proxy/src/orca_proxy/static/quick-add-catalog.json"
 
 put_credential() {
   local key="$1" entry command ttl
@@ -218,7 +205,7 @@ the user to install and initialize it (`sudo snap install lxd && sudo lxd init
 --auto`) and add themselves to the `lxd` group (`sudo usermod -aG lxd $USER`,
 then log in again). Those are the user's commands to run, not yours.
 
-All VM lifecycle goes through `$JL` (`jetty-lxd`, from step 3's `jetty.env`):
+All VM lifecycle goes through `$JL` (`jetty-lxd`, set by `jetty.env`):
 
 ```bash
 "$JL" setup     # idempotent: LXD project, networks, gateway VM; safe to rerun
@@ -372,7 +359,7 @@ Do not proceed to step 6 until `ssh <vm-name> echo ok` succeeds.
 
 ## 6. Register the VM with orca-proxy and wire the harness(es), git, and gh
 
-Skip this step entirely if step 3 was skipped (no harness, no GitHub access).
+Skip this step entirely if steps 3c and 3d were skipped (no harness, no GitHub access).
 
 ### Confirm registration
 
@@ -578,12 +565,11 @@ reimplementing jq's expression language), both installed in step 4.
 
 `jq` was already installed in step 4.
 
-Its complete source lives in this Jetty release at `gh-rest/gh-rest.py` —
-read it from the installed release directory rather than a checkout's `main`
-branch, and pipe it in over stdin:
+Its complete source lives in the installed release at `gh-rest/gh-rest.py` —
+read it from there rather than a checkout's `main` branch, and pipe it in
+over stdin:
 
 ```bash
-JETTY_RELEASE_DIR="$HOME/.local/share/jetty/releases/v1.0.0"  # match step 3's version
 "$JL" exec <vm-name> -- bash -c 'sudo tee /usr/local/bin/gh > /dev/null && sudo chmod 0755 /usr/local/bin/gh' \
   < "$JETTY_RELEASE_DIR/gh-rest/gh-rest.py"
 "$JL" exec <vm-name> -- gh --help

@@ -41,7 +41,8 @@ the gateway is down, agent VMs have no web egress at all.
 
 ## Use it
 
-Install the latest stable release, including its matching agent skill:
+Install the latest stable release, as your own user (no sudo). One command
+installs the agent skill and the host-side proxy service:
 
 ```bash
 curl -fsSL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-install.sh | bash
@@ -53,14 +54,17 @@ For a reproducible installation, substitute an exact release tag:
 curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.2/jetty-install.sh | bash
 ```
 
-The bootstrap verifies and keeps the matching Jetty source under
-`~/.local/share/jetty/releases/<version>/`, then uses `npx skills` to install
-`orca-ssh-setup` into your detected agents. To install the matching proxy in
-the same command, add `--with-proxy` (no sudo needed):
+The installer verifies the release and keeps it under
+`~/.local/share/jetty/releases/<version>/`, points
+`~/.local/share/jetty/current` at it, starts the `orca-proxy` user service
+from there, and uses `npx skills` to install `orca-ssh-setup` into your
+detected agents. Running a newer installer upgrades in place; proxy state
+(rules, credentials, logs, CA) lives in `~/.orca-proxy` and is kept. To go
+back, run `bash ~/.local/share/jetty/current/install.sh --rollback <version>`.
 
-```bash
-curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.2/jetty-install.sh | bash -s -- --with-proxy
-```
+If an older, Multipass-based orca-proxy is already running and you want to
+keep it, install beside it with `bash -s -- --instance orca-proxy-lxd --port
+18080`.
 
 Then ask your preferred coding agent to set up a Jetty VM for the current
 project. For example:
@@ -80,7 +84,8 @@ the agent in the VM.
 
 - Linux host with [LXD](https://canonical.com/lxd) installed and initialized
   (`snap install lxd && lxd init --auto`), and your user in the `lxd` group.
-- `git`, `curl`, `jq`, `uv`, and either Codex or Claude Code on the host.
+- `git`, `curl`, `jq`, `uv`, Node.js (`npx`), and either Codex or Claude Code
+  on the host.
 
 The proxy is shared by all Jetty VMs on one host and runs as your own user.
 Nothing in Jetty needs sudo, a setuid/setcap helper, or changes to the host

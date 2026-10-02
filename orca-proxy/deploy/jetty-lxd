@@ -22,6 +22,12 @@
 #   jetty-lxd status
 set -euo pipefail
 
+# Settings from Jetty's install.sh (proxy data dir, API port, service, venv),
+# unless the caller already set them (e.g. a test proxy).
+JETTY_ENV=${JETTY_HOME:-$HOME/.local/share/jetty}/jetty.env
+# shellcheck source=/dev/null
+[ -n "${ORCA_PROXY_HOME:-}" ] || [ ! -f "$JETTY_ENV" ] || . "$JETTY_ENV"
+
 PROJECT=${JETTY_LXD_PROJECT:-jetty}
 UP_NET=jettyup0
 UP_ADDR=10.201.0.1
@@ -34,8 +40,8 @@ SSH_PORT_BASE=2200          # host SSH to agent .N is gateway port 2200+N
 TUNNEL_PORT=51820   # must match deploy/orca-proxy.service
 GW_IMAGE=ubuntu:24.04
 API=http://127.0.0.1:${ORCA_PROXY_MANAGEMENT_PORT:-8080}/api/v1
-ORCA_PROXY_PYTHON=${ORCA_PROXY_PYTHON:-$HOME/.orca-proxy/current/venv/bin/python}
-ORCA_PROXY_SERVICE=${ORCA_PROXY_SERVICE:-orca-proxy.service}   # see ~/.<instance>/jetty.env
+ORCA_PROXY_PYTHON=${ORCA_PROXY_PYTHON:-$HOME/.local/share/jetty/current/orca-proxy/.venv/bin/python}
+ORCA_PROXY_SERVICE=${ORCA_PROXY_SERVICE:-orca-proxy.service}
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 LXC=(lxc --project "$PROJECT")
@@ -88,7 +94,7 @@ cmd_setup() {
   # lxc's create commands read YAML from any non-terminal stdin and block on it.
   exec </dev/null
   command -v lxc >/dev/null || die "LXD is not installed (snap install lxd && lxd init --auto)"
-  [ -x "$ORCA_PROXY_PYTHON" ] || die "orca-proxy is not installed ($ORCA_PROXY_PYTHON missing); run its deploy/install.sh first"
+  [ -x "$ORCA_PROXY_PYTHON" ] || die "orca-proxy is not installed ($ORCA_PROXY_PYTHON missing); run Jetty's install.sh first"
 
   lxc project show "$PROJECT" >/dev/null 2>&1 || lxc project create "$PROJECT" -c features.images=false -c features.profiles=true
   # The project's default profile has a root disk and deliberately no NIC.

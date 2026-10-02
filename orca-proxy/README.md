@@ -10,29 +10,21 @@ here needs root, a capability-bearing helper, or host firewall rules.
 
 ## Install (as a host service)
 
-```bash
-bash deploy/install.sh              # from a checkout, as your own user
-. ~/.orca-proxy/jetty.env           # sets $JL and $API for this instance
-"$JL" setup                         # LXD project, networks and gateway VM
-"$JL" launch my-vm                  # an agent VM, registered and trusting the CA
-```
-
-To install beside another orca-proxy (for example a Multipass-era one), give
-it its own instance name and port; everything else follows from
-`~/.<instance>/jetty.env`:
+Jetty's top-level `install.sh` installs this service; there is no separate
+installer. From a checkout, as your own user:
 
 ```bash
-ORCA_PROXY_INSTANCE=orca-proxy-lxd ORCA_PROXY_MANAGEMENT_PORT=18080 bash deploy/install.sh
-. ~/.orca-proxy-lxd/jetty.env
+bash install.sh                                  # or: --instance NAME --port PORT
+~/.local/share/jetty/current/orca-proxy/deploy/jetty-lxd setup
+~/.local/share/jetty/current/orca-proxy/deploy/jetty-lxd launch my-vm
 ```
 
-`install.sh` installs a versioned copy under `~/.local/share/orca-proxy/` and a
-systemd user unit. The unit's tunnel listener binds the host's address on the
-Jetty uplink network (`10.201.0.1`), so it keeps retrying until
-`jetty-lxd setup` has created that network. `jetty-lxd` needs your user in the
-`lxd` group; run it without arguments for its commands.
-
-Upgrading is the same `install.sh` command, run again.
+The service runs from `~/.local/share/jetty/current/orca-proxy` and keeps its
+state in `~/.<instance>` (default `~/.orca-proxy`). Its tunnel listener binds
+the host's address on the Jetty uplink network (`10.201.0.1`), so it keeps
+retrying until `jetty-lxd setup` has created that network. `jetty-lxd` reads
+`~/.local/share/jetty/jetty.env` for the instance's settings and needs your
+user in the `lxd` group; run it without arguments for its commands.
 
 ## Development
 
