@@ -9,6 +9,7 @@ cache-clear Management API operations in v1").
 """
 
 import asyncio
+import hashlib
 import os
 import signal
 import time
@@ -31,6 +32,10 @@ class CredentialExecutionError(Exception):
         self.category = category
         self.detail = detail
         self.exit_code = exit_code
+
+
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 @dataclass
@@ -188,6 +193,23 @@ class CredentialCache:
         if old is not None and old.process is not None:
             self._killpg(old.process)
         self._states[name] = _CredentialState()
+
+    def reject(self, name: str, value_digest: str) -> bool:
+        """Forget the cached value if it is still the one upstream just rejected.
+
+        A refresh elsewhere on the host (the provider's own CLI, or another
+        proxy sharing the same login) can revoke a cached access token before
+        its TTL. Compared by digest so a burst of 401s for the same stale
+        token clears it once, and a newer value or an in-flight refresh is
+        left alone.
+        """
+        state = self._states.get(name)
+        if state is None or state.value is None or value_digest != digest(state.value):
+            return False
+        state.value = None
+        state.expires_at = None
+        state.status = "empty"
+        return True
 
     def drop(self, name: str) -> None:
         """Remove all state for a deleted Credential (same effect as invalidate, no replacement)."""

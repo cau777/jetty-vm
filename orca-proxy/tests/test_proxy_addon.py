@@ -426,3 +426,23 @@ async def test_headers_redacted_in_logged_request(addon):
     assert headers["Cookie"]["value"] == "[REDACTED]"
     assert "secret-value" not in str(row)
     assert headers["Authorization"]["value"] == "[REDACTED · injected by gh]"
+
+
+async def test_upstream_401_drops_the_cached_credential(addon, tmp_path):
+    counter = tmp_path / "n"
+    _put_vm(addon)
+    _put_credential(addon, command=f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; echo token-$n")
+    _put_rule(addon, "gh", 10, "api.github.com",
+              {"type": "allow_with_credential", "credential": "gh", "path_prefix": "/", "injection": {"type": "bearer"}})
+    data = _client_hello_data(addon, sni="api.github.com")
+    addon.tls_clienthello(data)
+
+    first = _flow_for(addon, data.context.client)
+    await addon.request(first)
+    assert first.request.headers["Authorization"] == "Bearer token-1"
+    first.response = tflow.tresp(status_code=401)
+    addon.response(first)
+
+    second = _flow_for(addon, data.context.client)
+    await addon.request(second)
+    assert second.request.headers["Authorization"] == "Bearer token-2"

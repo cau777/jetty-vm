@@ -36,7 +36,7 @@ from mitmproxy import http, tls
 # (`uv run mitmdump -s ...`), per #4/#12's deployment model.
 from orca_proxy import config, db, request_log, rule_engine, tunnel
 from orca_proxy.app import create_app
-from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError
+from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError, digest
 from orca_proxy.redaction import redact_headers
 from orca_proxy.repo import credentials as credentials_repo
 from orca_proxy.repo import rules as rules_repo
@@ -293,6 +293,7 @@ class OrcaProxyAddon:
                 flow.request.headers[header_name] = f"Basic {basic}"
             flow.metadata["orca_injected_header"] = header_name
             flow.metadata["orca_credential_name"] = decision.credential
+            flow.metadata["orca_credential_digest"] = digest(value)
 
         # allow_default / allow_rule / successfully-injected allow_credential:
         # forward to the real upstream; response() logs once status is known.
@@ -301,6 +302,11 @@ class OrcaProxyAddon:
         if flow.metadata.get("orca_logged"):
             return
         status = flow.response.status_code if flow.response else None
+        credential_name = flow.metadata.get("orca_credential_name")
+        if status == 401 and credential_name:
+            # The next request re-runs the Credential command instead of
+            # replaying a token upstream has revoked until its TTL runs out.
+            self._credentials.reject(credential_name, flow.metadata["orca_credential_digest"])
         self._log_request(flow, status=status, status_origin="upstream")
         flow.metadata["orca_logged"] = True
 
