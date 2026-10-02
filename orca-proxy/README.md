@@ -1,32 +1,28 @@
 # orca-proxy
 
-Core service skeleton for the unified VM credential-injection & logging proxy
-(see `cau777/jetty-vm` issue #1 for the full design spec). This slice covers the
-entity model, SQLite persistence, the Management API CRUD surface, and
-Interception CA generation — not the mitmproxy addon, firewall enforcement,
-Credential execution engine, request logging, or Web UI, which are later
-slices.
+The host-side policy proxy for Jetty VMs: Management API, Web UI, rule engine,
+Credential execution, request logging and the mitmproxy addon, all in one
+mitmdump process running as your own user. See `design.md` for the full spec.
+
+Agent VMs run on LXD and reach it only through the Jetty gateway VM, which
+sends their TCP 80/443 into mitmdump's userspace WireGuard listener. Nothing
+here needs root, a capability-bearing helper, or host firewall rules.
 
 ## Install (as a host service)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/orca-proxy/deploy/install.sh | sudo bash
+bash deploy/install.sh              # from a checkout, as your own user
+deploy/jetty-lxd setup              # LXD project, networks and gateway VM
+deploy/jetty-lxd launch my-vm       # an agent VM, registered and trusting the CA
 ```
 
-Or, from an existing checkout: `sudo bash deploy/install.sh`. Either way it
-must run as root — see `deploy/install.sh`'s header comment and design.md's
-"Service installation and firewall-rule lifecycle" section for why (the
-short version: it compiles the firewall-sync helper and grants it
-`CAP_NET_ADMIN`/`CAP_NET_RAW` via `setcap`, which is only safe if nothing in
-the resulting binary's own path is writable by the unprivileged user that
-invokes it, which only root can arrange). Requires a C compiler (`cc` or
-`gcc`) and `setcap` (Debian/Ubuntu: `libcap2-bin`) on the host. The service
-itself still runs as your own user (`systemctl --user status
-orca-proxy.service`), not root, and there is no sudoers entry anywhere in
-this design.
+`install.sh` installs a versioned copy under `~/.local/share/orca-proxy/` and a
+systemd user unit. The unit's tunnel listener binds the host's address on the
+Jetty uplink network (`10.201.0.1`), so it keeps retrying until
+`jetty-lxd setup` has created that network. `jetty-lxd` needs your user in the
+`lxd` group; run it without arguments for its commands.
 
-Upgrading is the same command, run again. It's a deliberate action, not
-something a background process does for you.
+Upgrading is the same `install.sh` command, run again.
 
 ## Development
 
@@ -38,3 +34,7 @@ uv run python -m orca_proxy   # dev server on loopback, data dir defaults to ~/.
 
 Set `ORCA_PROXY_HOME` to override the data directory (used by tests to isolate
 each run in a temp directory).
+
+`tests/e2e/lxd-gateway-checks.sh` checks the whole topology against real VMs
+(identity, policy, spoofing, isolation, fail-closed); see its header for how to
+run it against a test proxy.

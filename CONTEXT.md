@@ -1,6 +1,6 @@
 # Unified VM Credential-Proxy
 
-A single-host service that governs outbound HTTP(S) access for registered Multipass VMs and selectively injects credentials.
+A single-host service that governs outbound HTTP(S) access for registered LXD VMs and selectively injects credentials.
 
 ## Language
 
@@ -9,11 +9,15 @@ The loopback-only interface through which host-side tools and the Web UI manage 
 _Avoid_: Proxy API, VM API
 
 **Proxy Listener**:
-The bridge-facing data-plane interface that receives forced outbound traffic from registered VMs. It grants no management authority.
+The WireGuard tunnel endpoint (mitmdump's userspace WireGuard mode) that receives forced outbound traffic from registered VMs via the Gateway. It grants no management authority.
 _Avoid_: Management API
 
+**Gateway**:
+The trusted LXD VM (`jetty-gw`) that is the only route out of the private agent network. It sends agent TCP 80/443 to the Proxy Listener without rewriting source addresses, and NATs other permitted traffic.
+_Avoid_: Router, proxy VM
+
 **VM**:
-A registered Multipass guest, identified by its immutable unique Multipass name, whose outbound HTTP(S) traffic is governed by the service. A VM is a traffic source, not a management client.
+A registered LXD agent guest, identified by its immutable unique instance name, whose outbound HTTP(S) traffic is governed by the service. A VM is a traffic source, not a management client.
 _Avoid_: Client
 
 **Provisioning Agent**:

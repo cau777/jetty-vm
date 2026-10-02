@@ -1,20 +1,16 @@
-import asyncio
-from contextlib import suppress
 from pathlib import Path
 
 from aiohttp import web
 
-from . import ca, config, db, request_log
+from . import ca, config, db, request_log, tunnel
 from .credential_exec import CredentialCache
 from .errors import error_middleware
-from .firewall import FirewallSync
 from .handlers import ca as ca_handlers
 from .handlers import credentials as credential_handlers
 from .handlers import health as health_handlers
 from .handlers import requests_api
 from .handlers import rules as rule_handlers
 from .handlers import vms as vm_handlers
-from .repo import vms as vms_repo
 
 
 def create_app(credential_cache: CredentialCache | None = None) -> web.Application:
@@ -48,34 +44,12 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
 
-    firewall_sync = FirewallSync(config.firewall_sync_script_path(), config.bridge_interface(), config.proxy_port())
-    app["firewall_sync"] = firewall_sync
-    # Reconcile once at startup against whatever VMs are already registered
-    # (e.g. after a restart) — not just future create/delete events — so
-    # /readyz reflects reality immediately rather than reporting a stale
-    # "nothing to sync" true from an empty in-memory status.
-    firewall_sync.reconcile(vms=[(row["name"], row["ip_address"]) for row in vms_repo.list_all(conn)])
-
-    async def maintain_firewall(_app: web.Application):
-        # Multipass's system service reports started before its asynchronous
-        # bridge/firewall initialization finishes. It can therefore delete
-        # our parent-chain hooks just after the one-shot sync above. Retry
-        # rapidly through that boot window, then keep checking for later
-        # Multipass/firewall reloads. The helper only mutates when its
-        # integrity check finds drift.
-        task = asyncio.create_task(
-            firewall_sync.maintain(lambda: [(row["name"], row["ip_address"]) for row in vms_repo.list_all(conn)]),
-            name="orca-proxy-firewall-maintenance",
-        )
-        _app["firewall_maintenance_task"] = task
-        try:
-            yield
-        finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
-    app.cleanup_ctx.append(maintain_firewall)
+    # The WireGuard keys mitmdump's tunnel listener uses (tunnel.py). Created
+    # here too so standalone/dev runs report the same readiness as the unit.
+    try:
+        tunnel.ensure_keys(config.tunnel_keys_path())
+    except Exception:
+        pass
 
     app.add_routes(
         [

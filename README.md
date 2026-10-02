@@ -1,6 +1,6 @@
 # Jetty
 
-**Permission-scoped Multipass VMs for coding agents.** Jetty gives an agent a
+**Permission-scoped LXD VMs for coding agents.** Jetty gives an agent a
 real, sudo-capable Linux machine to work in without giving that machine a copy
 of your host credentials.
 
@@ -15,26 +15,29 @@ Jetty combines two pieces:
 - `orca-ssh-setup` is an agent skill that provisions a project VM, installs
   the requested coding-agent tools, and connects the VM to an SSH-based agent
   workflow.
-- `orca-proxy` is a host-side service. It transparently directs a registered
-  VM's web traffic through a policy layer and injects a host-held credential
-  only for explicit VM, hostname, and path rules.
+- `orca-proxy` is a host-side service. It receives a registered VM's web
+  traffic through a gateway VM, applies a policy layer, and injects a
+  host-held credential only for explicit VM, hostname, and path rules.
 
 The result is a clear boundary: the coding agent can administer its VM, but it
 cannot read, copy, or reuse credentials held on the host. Network policy is
-enforced at the Multipass bridge, rather than relying on environment variables
-the agent can remove.
+enforced by the network topology itself, rather than by environment variables
+the agent can remove or by rules in the host's firewall: agent VMs sit on a
+private LXD network whose only way out is a Jetty gateway VM.
 
 ## How it works
 
 ```text
-your agent → dedicated Multipass VM → Jetty host policy → approved service
-                                      └─ host-held credential, only when a rule matches
+your agent → dedicated LXD VM → Jetty gateway VM ─(WireGuard)→ host orca-proxy → approved service
+                                                                  └─ host-held credential, only when a rule matches
 ```
 
 The host service has a loopback-only management API for registering VMs,
 credentials, and rules. Registered VMs do not receive management authority.
-Their HTTP(S) traffic is transparently redirected to the proxy; unmatched
-traffic is passed through without credentials.
+The gateway sends their HTTP(S) traffic (TCP 80/443) to the proxy through a
+WireGuard tunnel that ends in the unprivileged proxy process itself; unmatched
+traffic is passed through without credentials. If the proxy, the tunnel, or
+the gateway is down, agent VMs have no web egress at all.
 
 ## Use it
 
@@ -53,8 +56,7 @@ curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.2/jetty-ins
 The bootstrap verifies and keeps the matching Jetty source under
 `~/.local/share/jetty/releases/<version>/`, then uses `npx skills` to install
 `orca-ssh-setup` into your detected agents. To install the matching proxy in
-the same user-initiated command, add `--with-proxy`; it will request your sudo
-password:
+the same command, add `--with-proxy` (no sudo needed):
 
 ```bash
 curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.2/jetty-install.sh | bash -s -- --with-proxy
@@ -76,21 +78,21 @@ the agent in the VM.
 
 ## Prerequisites
 
-- Linux host with [Multipass](https://multipass.run) installed.
-- `git`, `curl`, and either Codex or Claude Code on the host.
-- A user able to run the one-time `orca-proxy` installation with `sudo` when
-  the VM needs host-held credentials or enforced HTTP(S) policy.
+- Linux host with [LXD](https://canonical.com/lxd) installed and initialized
+  (`snap install lxd && lxd init --auto`), and your user in the `lxd` group.
+- `git`, `curl`, `jq`, `uv`, and either Codex or Claude Code on the host.
 
-The proxy is shared by all Jetty VMs on one host. Its privileged firewall
-helper is installed as a root-owned file; the proxy service itself runs as a
-regular user.
+The proxy is shared by all Jetty VMs on one host and runs as your own user.
+Nothing in Jetty needs sudo, a setuid/setcap helper, or changes to the host
+firewall: LXD's daemon owns the bridges, and all routing policy lives inside
+the gateway VM.
 
 ## Project layout
 
 - [`orca-ssh-setup/`](orca-ssh-setup/) — the installable agent skill and
   end-to-end provisioning workflow.
 - [`orca-proxy/`](orca-proxy/) — policy service, management UI, transparent
-  proxy, credential execution, and firewall integration.
+  proxy, credential execution, and the `jetty-lxd` VM lifecycle tool.
 - [`CONTEXT.md`](CONTEXT.md) — the project's domain vocabulary.
 
 For service development and manual installation, see

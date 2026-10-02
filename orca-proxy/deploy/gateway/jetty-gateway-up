@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Runs INSIDE the Jetty gateway VM as root, at every boot (jetty-gateway.service),
+# installed there by deploy/jetty-lxd. All netfilter state lives in this VM's
+# kernel, never the host's.
+#
+#   agent tcp/80,443 to public addresses -> wg0 -> host orca-proxy (no SNAT,
+#                                           so the proxy sees each agent's IP)
+#   agent tcp/80,443 anywhere else       -> dropped
+#   agent traffic to private ranges      -> dropped
+#   other agent traffic                  -> NAT out the uplink
+#
+# ip_forward stays 0 (the kernel default) until everything else is in place,
+# so a failure anywhere here leaves agents with no egress at all.
+set -euo pipefail
+
+# shellcheck source=/dev/null
+. /etc/jetty-gateway/env   # UP_MAC PRIV_MAC PRIV_ADDR SERVER_PUB ENDPOINT
+
+sysctl -qw net.ipv4.ip_forward=0
+ifname() { for d in /sys/class/net/*; do [ "$(cat "$d/address")" = "$1" ] && basename "$d"; done; true; }
+UP=$(ifname "$UP_MAC"); PRIV=$(ifname "$PRIV_MAC")
+[ -n "$UP" ] && [ -n "$PRIV" ] || { echo "gateway NICs not found (uplink=$UP private=$PRIV)" >&2; exit 1; }
+
+sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0
+ip addr replace "$PRIV_ADDR" dev "$PRIV"; ip link set "$PRIV" up
+
+ip link del wg0 2>/dev/null || true
+ip link add wg0 type wireguard
+wg set wg0 private-key /etc/jetty-gateway/client.key \
+  peer "$SERVER_PUB" endpoint "$ENDPOINT" allowed-ips 0.0.0.0/0 persistent-keepalive 25
+ip link set wg0 mtu 1420 up
+
+# Marked packets use table 100 only; the unreachable route keeps that
+# fail-closed when wg0 is gone.
+ip rule del fwmark 0x1 lookup 100 2>/dev/null || true
+ip rule add fwmark 0x1 lookup 100 priority 100
+ip route flush table 100 2>/dev/null || true
+ip route add default dev wg0 table 100
+ip route add unreachable default metric 4000 table 100
+
+PRIVATE=(10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 127.0.0.0/8 0.0.0.0/8 224.0.0.0/4 240.0.0.0/4)
+
+iptables -t mangle -F; iptables -t mangle -X; iptables -t nat -F; iptables -F; iptables -X
+# Only public destinations go to the proxy: mitmproxy dials the original
+# destination from the host, so a private one would reach host/LAN services.
+iptables -t mangle -N JETTY_MARK
+for net in "${PRIVATE[@]}"; do iptables -t mangle -A JETTY_MARK -d "$net" -j RETURN; done
+iptables -t mangle -A JETTY_MARK -j MARK --set-mark 1
+iptables -t mangle -A PREROUTING -i "$PRIV" -p tcp -m multiport --dports 80,443 -j JETTY_MARK
+iptables -t mangle -A FORWARD -o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+iptables -P FORWARD DROP
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i "$PRIV" -o wg0 -p tcp -m multiport --dports 80,443 -j ACCEPT
+iptables -A FORWARD -i "$PRIV" -p tcp -m multiport --dports 80,443 -j DROP   # never direct
+for net in "${PRIVATE[@]}"; do iptables -A FORWARD -i "$PRIV" -d "$net" -j DROP; done
+iptables -A FORWARD -i "$PRIV" -o "$UP" -j ACCEPT   # other egress: unchanged semantics
+iptables -t nat -A POSTROUTING -o "$UP" -j MASQUERADE   # uplink only; wg0 keeps agent source IPs
+
+# Agents may not talk to the gateway itself.
+iptables -A INPUT -i "$PRIV" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i "$PRIV" -p icmp -j ACCEPT
+iptables -A INPUT -i "$PRIV" -j DROP
+
+ip6tables -P FORWARD DROP
+sysctl -qw net.ipv4.ip_forward=1
+echo "jetty gateway up (uplink=$UP private=$PRIV)"

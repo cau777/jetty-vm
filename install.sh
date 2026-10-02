@@ -12,7 +12,7 @@ usage() {
 Usage: install.sh [--with-proxy]
 
 Installs the Jetty skill for the version carried by this installer. With
---with-proxy, it also asks sudo to install the matching host-side proxy.
+--with-proxy, it also installs the matching host-side proxy (no sudo needed).
 EOF
 }
 
@@ -100,7 +100,6 @@ echo "Installed Jetty $JETTY_RELEASE_VERSION to $INSTALL_DIR"
 echo "The orca-ssh-setup skill is ready in your detected agent(s)."
 
 if [ "$INSTALL_PROXY" = true ]; then
-  echo "Installing matching orca-proxy $JETTY_RELEASE_VERSION (sudo confirmation required)..."
-  sudo env ORCA_PROXY_VERSION="$JETTY_RELEASE_VERSION" \
-    bash "$INSTALL_DIR/orca-proxy/deploy/install.sh"
+  echo "Installing matching orca-proxy $JETTY_RELEASE_VERSION..."
+  ORCA_PROXY_VERSION="$JETTY_RELEASE_VERSION" bash "$INSTALL_DIR/orca-proxy/deploy/install.sh"
 fi

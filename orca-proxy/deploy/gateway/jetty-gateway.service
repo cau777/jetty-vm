@@ -1,0 +1,12 @@
+[Unit]
+Description=Jetty gateway: route agent VM web traffic to the host orca-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/jetty-gateway-up
+
+[Install]
+WantedBy=multi-user.target
