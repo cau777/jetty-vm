@@ -167,6 +167,7 @@ agent VMs (one NIC on jettypriv0: no host address; LXD MAC/IPv4/IPv6
         tcp/80,443 elsewhere     -> DROP
         private/link-local/CGNAT -> DROP
         everything else          -> NAT out jettyup0 (unchanged semantics)
+   host -> 10.201.0.2:(2200+N)   -> DNAT + SNAT to agent 10.202.0.N:22 (host SSH, one hop)
 ```
 
 - The gateway does no SNAT into the tunnel; mitmproxy-rs accepts any inner
@@ -188,6 +189,12 @@ agent VMs (one NIC on jettypriv0: no host address; LXD MAC/IPv4/IPv6
 - Privileges: the proxy runs as the user, with no capabilities. LXD's daemon
   owns both bridges and their NAT; the lifecycle tool needs `lxd` group
   membership. Nothing writes host firewall rules.
+- Host SSH: the gateway has a static uplink address and forwards a port per
+  agent, from the host's address only. It also SNATs those connections to its
+  private address: with `br_netfilter` loaded (Docker loads it), the host's
+  netfilter sees frames crossing the agent bridge, and LXD's uplink masquerade
+  would otherwise rewrite the host source to the host's LAN IP, which the
+  agent's reply cannot reach.
 - Not covered: IPv6 (no path at all), UDP/QUIC and DNS (pass through the
   gateway's NAT, ungoverned, as before), other TCP ports (NATed, as before).
 

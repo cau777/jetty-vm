@@ -8,13 +8,14 @@
 #   agent tcp/80,443 anywhere else       -> dropped
 #   agent traffic to private ranges      -> dropped
 #   other agent traffic                  -> NAT out the uplink
+#   host -> uplink tcp/(SSH_PORT_BASE+N) -> agent 10.202.0.N:22 (host SSH, one hop)
 #
 # ip_forward stays 0 (the kernel default) until everything else is in place,
 # so a failure anywhere here leaves agents with no egress at all.
 set -euo pipefail
 
 # shellcheck source=/dev/null
-. /etc/jetty-gateway/env   # UP_MAC PRIV_MAC PRIV_ADDR SERVER_PUB ENDPOINT
+. /etc/jetty-gateway/env   # UP_MAC PRIV_MAC PRIV_ADDR SERVER_PUB ENDPOINT HOST_ADDR SSH_PORT_BASE
 
 sysctl -qw net.ipv4.ip_forward=0
 ifname() { for d in /sys/class/net/*; do [ "$(cat "$d/address")" = "$1" ] && basename "$d"; done; true; }
@@ -55,6 +56,18 @@ iptables -A FORWARD -i "$PRIV" -o wg0 -p tcp -m multiport --dports 80,443 -j ACC
 iptables -A FORWARD -i "$PRIV" -p tcp -m multiport --dports 80,443 -j DROP   # never direct
 for net in "${PRIVATE[@]}"; do iptables -A FORWARD -i "$PRIV" -d "$net" -j DROP; done
 iptables -A FORWARD -i "$PRIV" -o "$UP" -j ACCEPT   # other egress: unchanged semantics
+# Host SSH to agents: only the host's own uplink address, only to port 22.
+# Static for the whole agent range, so launching a VM never touches this.
+PRIV_NET_PREFIX=${PRIV_ADDR%.*}
+for n in $(seq 11 250); do
+  iptables -t nat -A PREROUTING -i "$UP" -s "$HOST_ADDR" -p tcp --dport $((SSH_PORT_BASE + n)) \
+    -j DNAT --to-destination "$PRIV_NET_PREFIX.$n:22"
+done
+iptables -A FORWARD -i "$UP" -o "$PRIV" -s "$HOST_ADDR" -p tcp --dport 22 -m conntrack --ctstate DNAT -j ACCEPT
+# ...arriving from the gateway's own private address. With the host's address
+# as source, hosts with br_netfilter loaded (Docker does) run LXD's uplink
+# masquerade over the bridged frame, so the agent answers the host's LAN IP.
+iptables -t nat -A POSTROUTING -o "$PRIV" -p tcp --dport 22 -m conntrack --ctstate DNAT -j SNAT --to-source "${PRIV_ADDR%/*}"
 iptables -t nat -A POSTROUTING -o "$UP" -j MASQUERADE   # uplink only; wg0 keeps agent source IPs
 
 # Agents may not talk to the gateway itself.

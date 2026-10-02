@@ -293,9 +293,11 @@ the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
 
 ## 5. Set up SSH access
 
-The host has no address on the agent network, so SSH reaches the VM through
-the gateway (`ProxyJump`). `launch` already authorized the key; generate the
-matching `~/.ssh/config` entries:
+The host has no address on the agent network. Instead, the gateway forwards
+one port per VM to that VM's SSH (`10.201.0.2`, port 2200 + the last octet of
+the VM's address), accepting only the host. That is still a single, ordinary
+SSH connection. `launch` already authorized the key; generate the matching
+`~/.ssh/config` entries:
 
 ```bash
 "$JL" ssh-config    # entries for the gateway and every Jetty VM
@@ -311,9 +313,8 @@ the **top** of `~/.ssh/config` if it isn't there yet (an `Include` after a
 ssh <vm-name> echo ok
 ```
 
-The VM's address is fixed at launch and survives reboots, but the gateway's
-uplink address comes from LXD's DHCP; if `ssh` stops working after a host
-reboot, regenerate the file.
+Both the VM's address and the gateway's are fixed, so these entries survive
+reboots.
 
 Do not proceed to step 6 until `ssh <vm-name> echo ok` succeeds.
 
@@ -612,15 +613,12 @@ Give the user these concrete, copy-pasteable steps (fill in the real values
 you just set up):
 
 1. Open Orca → **Settings → SSH**.
-2. Add a new host using the `~/.ssh/config` alias from step 5:
-   - **Host**: `<vm-name>` (the alias, which carries the gateway `ProxyJump`;
-     the VM's own address is not reachable from the host directly)
+2. Add a new host with the values from the step 5 entry:
+   - **Host/IP**: `10.201.0.2`
+   - **Port**: the entry's `Port` (2200 + the VM address's last octet)
    - **User**: `ubuntu`
    - **Identity file**: `~/.ssh/id_ed25519` (or whichever key was authorized)
    - **Name**: `<vm-name>` (so it's recognizable in the "Run on" picker)
-
-   Orca's support for a `ProxyJump` host hasn't been verified yet. If it
-   cannot connect, tell the user that this is the likely cause.
 3. Verify the connection in Orca's SSH settings (it should confirm git is
    available on the host).
 4. Create a new worktree for the repo, and under **Run on**, select

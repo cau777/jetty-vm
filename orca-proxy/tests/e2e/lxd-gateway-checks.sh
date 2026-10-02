@@ -81,8 +81,10 @@ echo "--- operations"
 SSHCFG=$(mktemp); trap 'rm -f "$SSHCFG"' EXIT
 "$JL" ssh-config $A >"$SSHCFG"
 printf 'Host *\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' >>"$SSHCFG"
-expect "host SSH to agent via ProxyJump through the gateway" \
+expect "host SSH to agent in one hop (gateway port forward)" \
   "$(ssh -F "$SSHCFG" $A 'echo ssh-ok' 2>&1)" 'ssh-ok'
+A_PORT=$(awk '/^ *Port /{print $2}' "$SSHCFG")
+expect "b cannot use a's forwarded SSH port on the gateway" "$(probe $B 10.201.0.2 "$A_PORT")" CLOSED
 expect "100 MB passthrough download (MTU/MSS)" \
   "$(ag $A 'curl -sS -o /dev/null -m 180 -w "%{http_code} %{size_download}" https://ash-speed.hetzner.com/100MB.bin')" '^200 104857600$'
 

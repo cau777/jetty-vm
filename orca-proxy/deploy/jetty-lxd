@@ -17,7 +17,7 @@
 #   jetty-lxd start|stop|restart NAME
 #   jetty-lxd exec NAME -- CMD...         run as the VM's `ubuntu` user (login shell env)
 #   jetty-lxd ip NAME
-#   jetty-lxd ssh-config [NAME...]        ~/.ssh/config entries (ProxyJump via the gateway)
+#   jetty-lxd ssh-config [NAME...]        ~/.ssh/config entries (one hop: a gateway port per VM)
 #   jetty-lxd list
 #   jetty-lxd status
 set -euo pipefail
@@ -29,6 +29,8 @@ PRIV_NET=jettypriv0
 PRIV_PREFIX=10.202.0
 GW=jetty-gw
 GW_PRIV_IP=$PRIV_PREFIX.1
+GW_UP_IP=${UP_ADDR%.*}.2    # static, so SSH config survives reboots
+SSH_PORT_BASE=2200          # host SSH to agent .N is gateway port 2200+N
 TUNNEL_PORT=51820   # must match deploy/orca-proxy.service
 GW_IMAGE=ubuntu:24.04
 API=http://127.0.0.1:${ORCA_PROXY_MANAGEMENT_PORT:-8080}/api/v1
@@ -66,7 +68,7 @@ ssh_pubkey() {
 
 userdata() { printf '#cloud-config\nssh_authorized_keys:\n  - %s\n%s\n' "$1" "${2:-}"; }
 
-gw_uplink_ip() { lx list "^$GW\$" -f csv -c 4 | tr ' ",' '\n\n\n' | grep "^${UP_ADDR%.*}\." | head -1; }
+ssh_port() { echo $((SSH_PORT_BASE + ${1##*.})); }
 
 agent_ip() { lx config device get "$1" eth0 ipv4.address 2>/dev/null; }
 
@@ -99,9 +101,18 @@ cmd_setup() {
   systemctl --user is-active --quiet orca-proxy.service 2>/dev/null || systemctl --user restart orca-proxy.service 2>/dev/null || true
 
   if ! exists "$GW"; then
-    lx init "$GW_IMAGE" "$GW" --vm -c limits.cpu=1 -c limits.memory=1GiB -d root,size=8GiB -n "$UP_NET"
+    lx init "$GW_IMAGE" "$GW" --vm -c limits.cpu=1 -c limits.memory=1GiB -d root,size=8GiB
+    lx config device add "$GW" eth0 nic network="$UP_NET" ipv4.address="$GW_UP_IP"
     lx config device add "$GW" eth1 nic network="$PRIV_NET"
     lx config set "$GW" cloud-init.user-data "$(userdata "$(ssh_pubkey "${SSH_KEY:-}")" 'packages: [wireguard-tools, iptables]')"
+  fi
+  # Gateways created before the static uplink address: pin it, then reboot so
+  # DHCP hands it out.
+  if [ "$(lx config device get "$GW" eth0 ipv4.address 2>/dev/null)" != "$GW_UP_IP" ]; then
+    lx config device get "$GW" eth0 network >/dev/null 2>&1 \
+      && lx config device set "$GW" eth0 ipv4.address="$GW_UP_IP" \
+      || lx config device override "$GW" eth0 ipv4.address="$GW_UP_IP"
+    [ "$(lx list "^$GW\$" -f csv -c s)" = RUNNING ] && lx stop "$GW"
   fi
   start_vm "$GW"
   wait_agent "$GW"
@@ -119,13 +130,15 @@ PRIV_MAC=$(lx config get "$GW" volatile.eth1.hwaddr)
 PRIV_ADDR=$GW_PRIV_IP/24
 SERVER_PUB=$server_pub
 ENDPOINT=$UP_ADDR:$TUNNEL_PORT
+HOST_ADDR=$UP_ADDR
+SSH_PORT_BASE=$SSH_PORT_BASE
 EOF
   lx exec "$GW" -- sh -c 'cat > /usr/local/sbin/jetty-gateway-up && chmod 755 /usr/local/sbin/jetty-gateway-up' <"$HERE/gateway/jetty-gateway-up"
   lx exec "$GW" -- sh -c 'cat > /etc/systemd/system/jetty-gateway.service' <"$HERE/gateway/jetty-gateway.service"
   lx exec "$GW" -- systemctl daemon-reload
   lx exec "$GW" -- systemctl enable jetty-gateway.service >/dev/null 2>&1
   lx exec "$GW" -- systemctl restart jetty-gateway.service
-  echo "Jetty gateway ready ($GW, uplink $(gw_uplink_ip))"
+  echo "Jetty gateway ready ($GW, uplink $GW_UP_IP)"
 }
 
 cmd_launch() {
@@ -199,13 +212,14 @@ cmd_exec() {
 }
 
 cmd_ssh_config() {
-  local gw_ip names
-  gw_ip=$(gw_uplink_ip)
-  [ -n "$gw_ip" ] || die "gateway has no uplink address; is it running?"
+  local names
   if [ $# -gt 0 ]; then names=("$@"); else mapfile -t names < <(agents); fi
-  printf 'Host %s\n  HostName %s\n  User ubuntu\n\n' "$GW" "$gw_ip"
+  printf 'Host %s\n  HostName %s\n  User ubuntu\n\n' "$GW" "$GW_UP_IP"
+  # One hop: the gateway forwards port 2200+N to agent .N:22. HostKeyAlias
+  # keeps known_hosts per VM rather than per gateway port.
   for n in "${names[@]}"; do
-    printf 'Host %s\n  HostName %s\n  User ubuntu\n  ProxyJump %s\n\n' "$n" "$(agent_ip "$n")" "$GW"
+    printf 'Host %s\n  HostName %s\n  Port %s\n  User ubuntu\n  HostKeyAlias %s\n\n' \
+      "$n" "$GW_UP_IP" "$(ssh_port "$(agent_ip "$n")")" "$n"
   done
 }
 
