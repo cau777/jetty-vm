@@ -1,5 +1,5 @@
 {
-  "version": "v1.0.2",
+  "version": "v2.0.0",
   "skill": "orca-ssh-setup",
   "proxy": "orca-proxy"
 }
