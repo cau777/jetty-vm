@@ -105,11 +105,13 @@ def main() -> int:
 
     tray = QSystemTrayIcon(make_icon("#97a6ba"), app)
     menu = QMenu()
-    open_action = QAction("Open Jetty", menu)
-    setup_action = QAction("Open setup", menu)
-    restart_action = QAction("Restart proxy", menu)
-    logs_action = QAction("Show logs", menu)
-    quit_action = QAction("Quit tray", menu)
+    # Owned by the app, not the menu: refresh() calls menu.clear(), which
+    # deletes any action the menu owns.
+    open_action = QAction("Open Jetty", app)
+    setup_action = QAction("Open setup", app)
+    restart_action = QAction("Restart proxy", app)
+    logs_action = QAction("Show logs", app)
+    quit_action = QAction("Quit tray", app)
     open_action.triggered.connect(lambda: window.open_url("/"))
     setup_action.triggered.connect(lambda: window.open_url("/setup"))
     restart_action.triggered.connect(
