@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import secrets
@@ -206,6 +207,7 @@ class JettyLxd:
                     },
                 )
             await self._start(client, GATEWAY)
+            await self._wait_for_agent(client, GATEWAY)
             result = await client.execute(GATEWAY, ["cloud-init", "status", "--wait"])
             _require_success(result, ["cloud-init", "status", "--wait"], GATEWAY)
             await self._configure_gateway(client)
@@ -283,6 +285,7 @@ class JettyLxd:
             vms_repo.put(self.db, name, ip)
             await self._sync_ssh_config()
             await self._start(client, name)
+            await self._wait_for_agent(client, name)
             cloud_init = await client.execute(name, ["cloud-init", "status", "--wait"])
             _require_success(cloud_init, ["cloud-init", "status", "--wait"], name)
             instance = await self._instance(client, name)
@@ -495,6 +498,25 @@ class JettyLxd:
             f"/1.0/instances/{quote(name, safe='')}/state",
             body={"action": "start", "timeout": 60},
         )
+
+    async def _wait_for_agent(self, client: LxdClient, name: str) -> None:
+        """Wait up to five minutes for the VM's LXD guest agent to answer exec."""
+        deadline = time.monotonic() + 300
+        last_error: LxdError | None = None
+        while time.monotonic() < deadline:
+            try:
+                async with asyncio.timeout(min(15, deadline - time.monotonic())):
+                    result = await client.execute(name, ["true"])
+                if result.exit_code == 0:
+                    return
+                last_error = LxdError(f"guest agent readiness command exited {result.exit_code}")
+            except LxdError as exc:
+                last_error = exc
+            except TimeoutError:
+                last_error = LxdError("guest agent readiness command timed out")
+            await asyncio.sleep(2)
+        detail = f": {last_error}" if last_error else ""
+        raise LxdError(f"{name}: LXD guest agent did not become available within five minutes{detail}")
 
     async def _configure_gateway(self, client: LxdClient) -> None:
         instance = await self._instance(client, GATEWAY)

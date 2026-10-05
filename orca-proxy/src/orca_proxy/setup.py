@@ -24,12 +24,17 @@ def _appimage_source() -> Path:
     raise RuntimeError("Run setup from the downloaded Jetty AppImage.")
 
 
-def _systemd_quote(value: str) -> str:
+def _quote_path(value: str) -> str:
     return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _desktop_quote(value: str) -> str:
-    return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
+def _copy_asset_if_present(source: Path, target: Path, *, executable: bool = False) -> None:
+    if not source.is_file():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    if executable:
+        target.chmod(0o755)
 
 
 def _write_user_files(executable: Path) -> None:
@@ -40,7 +45,7 @@ def _write_user_files(executable: Path) -> None:
     for directory in (unit_dir, autostart_dir, applications_dir, icon_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
-    quoted_executable = _systemd_quote(str(executable))
+    quoted_executable = _quote_path(str(executable))
     unit = (
         "# Written by Jetty; rerun `jetty setup` to update it.\n"
         "[Unit]\nDescription=Jetty management service\nAfter=default.target\n\n"
@@ -51,7 +56,7 @@ def _write_user_files(executable: Path) -> None:
     )
     (unit_dir / DAEMON_UNIT).write_text(unit, encoding="utf-8")
 
-    desktop_exec = f"{_desktop_quote(str(executable))} tray"
+    desktop_exec = f"{_quote_path(str(executable))} tray"
     desktop = (
         "[Desktop Entry]\nType=Application\nName=Jetty\nComment=Manage Jetty virtual machines\n"
         f"Exec={desktop_exec}\nIcon=jetty\nTerminal=false\nCategories=Development;Utility;\n"
@@ -157,12 +162,8 @@ def _install_gh_helper() -> None:
         source = Path(getattr(sys, "_MEIPASS")) / "orca_proxy" / "gh-rest.py"
     else:
         source = Path(__file__).resolve().parents[3] / "gh-rest" / "gh-rest.py"
-    if not source.is_file():
-        return
     target = Path.home() / ".local/share/jetty/gh-rest.py"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
-    target.chmod(0o755)
+    _copy_asset_if_present(source, target, executable=True)
 
 
 def _install_catalog() -> None:
@@ -170,11 +171,8 @@ def _install_catalog() -> None:
         source = Path(getattr(sys, "_MEIPASS")) / "orca_proxy" / "static" / "quick-add-catalog.json"
     else:
         source = Path(__file__).resolve().parent / "static" / "quick-add-catalog.json"
-    if not source.is_file():
-        return
     target = Path.home() / ".local/share/jetty/quick-add-catalog.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
+    _copy_asset_if_present(source, target)
 
 
 def main(argv: list[str] | None = None) -> int:
