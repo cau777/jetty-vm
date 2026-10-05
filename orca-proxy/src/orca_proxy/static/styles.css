@@ -35,6 +35,7 @@ button { cursor: pointer; }
 .button:hover { border-color: #51627a; }
 .button.primary { color: #051611; border-color: var(--accent); background: var(--accent); font-weight: 700; }
 .button.danger { border-color: var(--danger); color: var(--danger); }
+.button:disabled, .icon-button:disabled { opacity: .55; cursor: default; }
 .icon-button { border: 0; color: var(--muted); background: transparent; padding: 6px; border-radius: 6px; }
 .icon-button:hover { color: var(--text); background: #ffffff0c; }
 .search { width: 100%; color: var(--text); background: #080b10; border: 1px solid var(--line); border-radius: 7px; padding: 9px 11px; }
@@ -104,6 +105,18 @@ tr[data-select]:hover, tr.selected { background: #ffffff08; }
 .checkboxes { display: flex; flex-wrap: wrap; gap: 8px; }
 .checkboxes label { color: var(--text); background: #090c11; border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; text-transform: none; letter-spacing: 0; }
 .quick-add-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+fieldset.form-grid { border: 0; padding: 0; min-width: 0; }
+fieldset.form-grid:disabled { opacity: .6; }
+.banner.progress { display: flex; gap: 10px; align-items: flex-start; line-height: 1.45; }
+.spinner { flex: none; width: 14px; height: 14px; margin-top: 1px; border: 2px solid #7eb7ff40; border-top-color: var(--accent-2); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.next-step { font-size: 13px; line-height: 1.55; margin: 0 0 18px; }
+.handoff-dir { margin-bottom: 12px; }
+.agent-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.handoff-result { margin-top: 12px; font-size: 12px; line-height: 1.45; }
+.handoff-result.success { color: var(--ok); }
+.handoff-result.danger { color: var(--danger); }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; }
 
 @media (max-width: 980px) {

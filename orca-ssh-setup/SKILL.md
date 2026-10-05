@@ -199,6 +199,10 @@ ask the user to run `"$JETTY" setup` and sign out and back in if requested.
 LXD group access grants root-equivalent control of the host, so the user must
 authorize that setup themselves.
 
+If the user created the VM in the Jetty app (Jetty's handoff prompt says
+so), do not create another one. Confirm it with `"$JETTY" vm list`, skip the
+name, sizing and image questions in step 2, and skip `vm create` below.
+
 All VM lifecycle goes through the Jetty app's loopback API:
 
 ```bash

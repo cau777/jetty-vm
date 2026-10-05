@@ -67,6 +67,7 @@ def create_app(
             web.post("/api/v1/jetty/vms/{name}/action", jetty_handlers.vm_action),
             web.post("/api/v1/jetty/vms/{name}/exec", jetty_handlers.vm_exec),
             web.post("/api/v1/jetty/vms/{name}/files", jetty_handlers.vm_upload),
+            web.post("/api/v1/jetty/vms/{name}/handoff", jetty_handlers.vm_handoff),
             web.get("/api/v1/jetty/ssh-config", jetty_handlers.ssh_config),
             web.get("/api/v1/ca", ca_handlers.get_ca),
             web.get("/api/v1/vms", vm_handlers.list_vms),

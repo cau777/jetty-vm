@@ -12,9 +12,26 @@ const state = {
   quickAddCatalog: [],
   ca: null,
   jettyStatus: null,
-  editor: null, // { kind: "rule"|"credential"|"vm", existingName, errors: {}, banner }
+  editor: null, // { kind: "rule"|"credential"|"vm"|"vm-created", existingName, errors: {}, banner }
+  handoff: null, // { vm, agent, pending, message, tone } for the last agent button pressed
+  projectDir: readStored("jetty.projectDir"),
   loadError: null,
 };
+
+const AGENTS = [
+  { key: "claude", label: "Claude Code" },
+  { key: "codex", label: "Codex" },
+  { key: "pi", label: "Pi" },
+  { key: "opencode", label: "OpenCode" },
+];
+
+function readStored(key) {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+}
+
+function writeStored(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* storage unavailable */ }
+}
 
 // --- API ---
 
@@ -184,7 +201,15 @@ function vmInspector() {
   if (!vm) return `<div class="eyebrow">Selection inspector</div><p class="muted">Select a VM to inspect it.</p>`;
   return `<div class="inspector-header"><div><div class="eyebrow">VM</div><h2 style="margin:6px 0 3px">${esc(vm.name)}</h2></div><button class="button danger" data-delete-vm="${esc(vm.name)}">Delete</button></div>
     <dl class="kv"><dt>Status</dt><dd>${statusBadge(vm.status || "unknown", vm.status === "Running" ? "ok" : "warn")}</dd><dt>IP address</dt><dd class="mono">${esc(vm.ip_address)}</dd><dt>Rules</dt><dd>${rulesReferencingVm(vm.name)}</dd><dt>Registered</dt><dd class="tiny">${esc(vm.created_at || "—")}</dd></dl>
-    <div class="inspector-section"><button class="button" data-vm-action="${esc(vm.name)}" data-action="${vm.status === "Running" ? "stop" : "start"}">${vm.status === "Running" ? "Stop" : "Start"}</button> <button class="button" data-vm-action="${esc(vm.name)}" data-action="restart">Restart</button></div>`;
+    <div class="inspector-section"><button class="button" data-vm-action="${esc(vm.name)}" data-action="${vm.status === "Running" ? "stop" : "start"}">${vm.status === "Running" ? "Stop" : "Start"}</button> <button class="button" data-vm-action="${esc(vm.name)}" data-action="restart">Restart</button></div>
+    <div class="inspector-section"><div class="eyebrow">Prepare with an agent</div>${agentHandoff(vm.name, "inspector")}</div>`;
+}
+
+function agentHandoff(vmName, context) {
+  const handoff = state.handoff?.vm === vmName ? state.handoff : null;
+  return `<div class="field handoff-dir"><label for="${context}-project-dir">Project folder</label><input id="${context}-project-dir" class="mono" data-project-dir value="${esc(state.projectDir)}" placeholder="Home folder if empty, e.g. ~/code/my-app"><small>The agent starts here, reads the repo and sets the VM up for it.</small></div>
+    <div class="agent-buttons">${AGENTS.map((a) => `<button type="button" class="button" data-handoff-vm="${esc(vmName)}" data-agent="${a.key}" ${handoff?.pending ? "disabled" : ""}>${handoff?.pending && handoff.agent === a.key ? "Opening…" : esc(a.label)}</button>`).join("")}</div>
+    ${handoff?.message ? `<div class="handoff-result ${handoff.tone}">${esc(handoff.message)}</div>` : ""}`;
 }
 
 function credentialInspector() {
@@ -289,24 +314,37 @@ function vmEditorForm() {
   const editor = state.editor;
   const errors = editor.errors || {};
   const values = editor.values;
+  const busy = editor.busy ? "disabled" : "";
   return `<form class="drawer" id="entity-form">
-    <div class="drawer-head"><div><div class="eyebrow">New VM</div><h2 style="margin:6px 0">Create an agent VM</h2><p class="section-subtitle">Jetty launches an isolated LXD virtual machine and registers it with the proxy.</p></div><button type="button" class="icon-button" data-close-editor>✕</button></div>
+    <div class="drawer-head"><div><div class="eyebrow">New VM</div><h2 style="margin:6px 0">Create an agent VM</h2><p class="section-subtitle">Jetty launches an isolated LXD virtual machine and registers it with the proxy.</p></div><button type="button" class="icon-button" data-close-editor ${busy}>✕</button></div>
     ${editor.banner ? `<div class="banner">${esc(editor.banner)}</div>` : ""}
-    <div class="form-grid">
+    ${editor.busy ? `<div class="banner info progress"><span class="spinner"></span>Creating ${esc(values.name)}. Jetty downloads the image if needed, boots the VM and waits for cloud-init. This usually takes one to three minutes.</div>` : ""}
+    <fieldset class="form-grid" ${busy}>
       <div class="${fieldClass(errors, "name")}"><label for="f-name">Name</label><input id="f-name" name="name" required value="${esc(values.name)}">${fieldError(errors, "name")}</div>
       <div class="${fieldClass(errors, "cpus")}"><label for="f-cpus">CPUs</label><input id="f-cpus" name="cpus" type="number" min="1" max="128" required value="${esc(values.cpus)}">${fieldError(errors, "cpus")}</div>
       <div class="${fieldClass(errors, "memory")}"><label for="f-memory">Memory</label><input id="f-memory" name="memory" required value="${esc(values.memory)}" placeholder="8GiB">${fieldError(errors, "memory")}</div>
       <div class="${fieldClass(errors, "disk")}"><label for="f-disk">Root disk</label><input id="f-disk" name="disk" required value="${esc(values.disk)}" placeholder="40GiB">${fieldError(errors, "disk")}</div>
       <div class="${fieldClass(errors, "image")}"><label for="f-image">Ubuntu image alias</label><input id="f-image" name="image" required value="${esc(values.image)}">${fieldError(errors, "image")}</div>
       <div class="field"><label for="f-ssh-key">SSH public key</label><textarea id="f-ssh-key" name="sshPublicKey" rows="3" placeholder="Optional if a standard ~/.ssh/*.pub key exists">${esc(values.sshPublicKey)}</textarea><small>The public key is copied to the VM. The private key stays on this computer.</small></div>
-    </div>
-    <div class="form-actions"><button type="button" class="button" data-close-editor>Cancel</button><button type="submit" class="button primary">Create VM</button></div>
+    </fieldset>
+    <div class="form-actions"><button type="button" class="button" data-close-editor ${busy}>Cancel</button><button type="submit" class="button primary" ${busy}>${editor.busy ? "Creating…" : "Create VM"}</button></div>
   </form>`;
+}
+
+function vmCreatedPanel() {
+  const vm = state.editor.vm;
+  return `<div class="drawer">
+    <div class="drawer-head"><div><div class="eyebrow">New VM</div><h2 style="margin:6px 0">${esc(vm.name)}</h2></div><button type="button" class="icon-button" data-close-editor>✕</button></div>
+    <div class="banner success">VM created successfully at <span class="mono">${esc(vm.ip_address)}</span>.</div>
+    <p class="next-step"><strong>It is not set up yet.</strong> Use your agent to prepare it: the agent inspects your project, installs its toolchain and coding-agent harnesses, and adds the access rules it needs.</p>
+    ${agentHandoff(vm.name, "created")}
+    <div class="form-actions"><button type="button" class="button" data-close-editor>Done</button></div>
+  </div>`;
 }
 
 function editorDrawer() {
   if (!state.editor) return "";
-  const form = { rule: ruleEditorForm, credential: credentialEditorForm, vm: vmEditorForm }[state.editor.kind]();
+  const form = { rule: ruleEditorForm, credential: credentialEditorForm, vm: vmEditorForm, "vm-created": vmCreatedPanel }[state.editor.kind]();
   return `<div class="scrim">${form}</div>`;
 }
 
@@ -440,6 +478,7 @@ function openVmEditor() {
 }
 
 function closeEditor() {
+  if (state.editor?.busy) return;
   state.editor = null;
   render();
 }
@@ -497,17 +536,58 @@ async function submitCredentialForm(form) {
 
 async function submitVmForm(form) {
   const data = new FormData(form);
-  const name = data.get("name");
-  await api("POST", "/api/v1/jetty/vms", {
-    name,
-    cpus: Number(data.get("cpus")),
+  const editor = state.editor;
+  editor.values = {
+    name: data.get("name"),
+    cpus: data.get("cpus"),
     memory: data.get("memory"),
     disk: data.get("disk"),
     image: data.get("image"),
-    ssh_public_key: data.get("sshPublicKey").trim(),
-  });
-  await loadEntities();
-  state.selectedVmName = name;
+    sshPublicKey: data.get("sshPublicKey"),
+  };
+  editor.busy = true;
+  editor.banner = null;
+  editor.errors = {};
+  state.activeView = "vms";
+  render();
+  try {
+    const vm = await api("POST", "/api/v1/jetty/vms", {
+      name: editor.values.name,
+      cpus: Number(editor.values.cpus),
+      memory: editor.values.memory,
+      disk: editor.values.disk,
+      image: editor.values.image,
+      ssh_public_key: editor.values.sshPublicKey.trim(),
+    });
+    state.selectedVmName = vm.name;
+    state.handoff = null;
+    state.editor = { kind: "vm-created", vm };
+  } catch (err) {
+    editor.busy = false;
+    editor.errors = err.fields || {};
+    editor.banner = Object.keys(editor.errors).length ? null : `Could not create the VM: ${err.message}. Check the list: the VM may exist even though setup did not finish.`;
+  } finally {
+    // A failed create can still leave an instance behind; always show the real list.
+    try { await loadEntities(); } catch { /* keep the previous list */ }
+    render();
+  }
+}
+
+async function handOff(vmName, agent) {
+  const label = AGENTS.find((a) => a.key === agent)?.label || agent;
+  state.handoff = { vm: vmName, agent, pending: true };
+  render();
+  try {
+    const result = await api("POST", `/api/v1/jetty/vms/${encodeURIComponent(vmName)}/handoff`, {
+      agent,
+      project_dir: state.projectDir.trim(),
+    });
+    const skill = result.skill_install ? "installs the orca-ssh-setup skill, then " : "";
+    state.handoff = { vm: vmName, agent, tone: "success", message: `Opened ${result.terminal}: ${skill}${label} starts in ${result.project_dir}.` };
+  } catch (err) {
+    state.handoff = { vm: vmName, agent, tone: "danger", message: `Could not start ${label}: ${err.message}` };
+  }
+  render();
 }
 
 async function runVmAction(name, action) {
@@ -524,10 +604,13 @@ async function handleFormSubmit(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const kind = state.editor.kind;
+  if (kind === "vm") {
+    if (!state.editor.busy) await submitVmForm(form);
+    return;
+  }
   try {
     if (kind === "rule") await submitRuleForm(form);
     else if (kind === "credential") await submitCredentialForm(form);
-    else if (kind === "vm") await submitVmForm(form);
     state.editor = null;
     state.activeView = kind + "s";
   } catch (err) {
@@ -575,6 +658,12 @@ function bind() {
   injectionSelect?.addEventListener("change", () => {
     document.querySelector("#username-field").style.display = injectionSelect.value === "basic" ? "grid" : "none";
   });
+
+  document.querySelectorAll("[data-project-dir]").forEach((input) => input.addEventListener("input", () => {
+    state.projectDir = input.value;
+    writeStored("jetty.projectDir", input.value);
+  }));
+  document.querySelectorAll("[data-handoff-vm]").forEach((b) => b.addEventListener("click", () => handOff(b.dataset.handoffVm, b.dataset.agent)));
 
   document.querySelector("#entity-form")?.addEventListener("submit", handleFormSubmit);
 }

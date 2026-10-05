@@ -1,11 +1,17 @@
+import asyncio
 import base64
+import logging
 
 from aiohttp import web
 
-from ..errors import ServiceUnavailable
+from .. import handoff
+from ..errors import NotFound, ServiceUnavailable
 from ..jetty import JettyLxd
 from ..lxd import LxdError
+from ..repo import vms as vms_repo
 from . import read_json_body, reject_unknown_fields
+
+log = logging.getLogger("jetty.api")
 
 
 def _service(request: web.Request) -> JettyLxd:
@@ -16,6 +22,7 @@ async def _call(operation):
     try:
         return await operation
     except LxdError as exc:
+        log.warning("LXD operation failed: %s", exc)
         raise ServiceUnavailable(str(exc)) from exc
 
 
@@ -117,6 +124,19 @@ async def vm_upload(request: web.Request) -> web.Response:
         raise ValidationFailed("content_b64 is invalid", fields={"content_b64": "invalid base64"}) from exc
     await _call(_service(request).upload_vm_file(request.match_info["name"], path, content, mode=mode, owner=owner))
     return web.json_response({"path": path, "bytes_written": len(content)})
+
+
+async def vm_handoff(request: web.Request) -> web.Response:
+    body = await read_json_body(request)
+    reject_unknown_fields(body, {"agent", "project_dir"})
+    name = request.match_info["name"]
+    vm = vms_repo.get(request.app["db"], name)
+    if vm is None:
+        raise NotFound(f"VM '{name}' is not registered")
+    project_dir = handoff.project_directory(body.get("project_dir"))
+    agent = body.get("agent")
+    result = await asyncio.to_thread(handoff.launch, agent if isinstance(agent, str) else "", name, vm["ip_address"], project_dir)
+    return web.json_response(result, status=202)
 
 
 async def ssh_config(request: web.Request) -> web.Response:
