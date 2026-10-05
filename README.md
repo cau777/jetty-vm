@@ -1,23 +1,34 @@
-# Jetty
+## Motivation
 
-**Permission-scoped LXD VMs for coding agents.** Jetty gives an agent a
-real, sudo-capable Linux machine to work in without giving that machine a copy
-of your host credentials.
+The current software development ecosystem just feels dangerous.
 
-It is intended for agent workflows that need more isolation than a local
-checkout, while still needing selected access to services such as GitHub,
-Codex, or Claude Code.
+- Your agent is running bash commands in a long unsupervised session with access to all your personal files
+- Each project you start immediately downloads hundreds of third-party dependencies, which execute code on your machine
+- Agents are still not immune to prompt injection or to simply making a mistake (deleting your production database with that key you forgot in .env)
+- Your AI credentials are very valuable targets for attacks
+
+Also, the cost of starting a project decreased massively, but those often "pollute" you machine with random files and host config.
+
+## How Jetty solves that
+
+Jetty reduces the cost of creating a truly isolated environment. You can create a LXD VM for each of your project with a few clicks, then, hand off to an agent to configure it.
+
+- The VM is isolated from your host and from your other VMs -&gt; You can let your agents run wild inside them
+- The VM has access to the internet, but can't connect to other VMs or your host without an explicit SSH tunnel -&gt; You control what is exposed
+- The HTTP(s) traffic is proxied -&gt; The proxy allows logging, blocking and intercepting requests
+- The proxy can inject credentials to specific endpoints -&gt; Your VM does not need your GitHub or OpenAI tokens
+- The VM has SSH configured -&gt; Use Orca, VSCode or JetBrains IDEs just like another SSH target
 
 ## What Jetty does
 
 Jetty combines two pieces:
 
 - `orca-ssh-setup` is an agent skill that provisions a project VM, installs
-  the requested coding-agent tools, and connects the VM to an SSH-based agent
-  workflow.
+the requested coding-agent tools, and connects the VM to an SSH-based agent
+workflow.
 - `orca-proxy` is a host-side service. It receives a registered VM's web
-  traffic through a gateway VM, applies a policy layer, and injects a
-  host-held credential only for explicit VM, hostname, and path rules.
+traffic through a gateway VM, applies a policy layer, and injects a
+host-held credential only for explicit VM, hostname, and path rules.
 
 The result is a clear boundary: the coding agent can administer its VM, but it
 cannot read, copy, or reuse credentials held on the host. Network policy is
@@ -81,7 +92,7 @@ the agent in the VM.
 - Ubuntu 22.04 or newer on x86_64, with a desktop session and `snapd`.
 - A Polkit authentication agent for the one-time `pkexec` prompts.
 - `npx` to install the skill automatically. Without it, install
-  `orca-ssh-setup/` into your coding agent using that agent's skill manager.
+`orca-ssh-setup/` into your coding agent using that agent's skill manager.
 - Codex or Claude Code on the host if you want to use those harnesses.
 
 The proxy daemon and tray run as your user. LXD owns the bridges, and routing
@@ -91,9 +102,9 @@ rule or privileged helper.
 ## Project layout
 
 - [`orca-ssh-setup/`](orca-ssh-setup/) — the installable agent skill and
-  end-to-end provisioning workflow.
+end-to-end provisioning workflow.
 - [`orca-proxy/`](orca-proxy/) — daemon, tray, management UI, LXD REST client,
-  CLI, transparent proxy, and credential execution.
+CLI, transparent proxy, and credential execution.
 - [`CONTEXT.md`](CONTEXT.md) — the project's domain vocabulary.
 
 For development and the source installer, see
