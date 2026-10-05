@@ -8,27 +8,29 @@ from .errors import error_middleware
 from .handlers import ca as ca_handlers
 from .handlers import credentials as credential_handlers
 from .handlers import health as health_handlers
+from .handlers import jetty as jetty_handlers
 from .handlers import requests_api
 from .handlers import rules as rule_handlers
+from .handlers import system as system_handlers
 from .handlers import vms as vm_handlers
 
 
-def create_app(credential_cache: CredentialCache | None = None) -> web.Application:
+def create_app(
+    credential_cache: CredentialCache | None = None,
+    daemon_status: dict | None = None,
+) -> web.Application:
     """Build the aiohttp application.
 
-    Decoupled from any specific entrypoint — a later slice starts this from
-    within the mitmproxy addon's own asyncio loop instead of a standalone
-    web.run_app(), per the design spec's language/stack decision (#4).
+    The desktop daemon starts this before the WireGuard listener so setup is
+    available while the Jetty network is being created. The legacy addon mode
+    can still host it from mitmproxy's event loop; `__main__` remains useful
+    for local API development.
 
-    `credential_cache` lets the caller share one `CredentialCache` instance
-    with another component in the same process (the mitmdump addon, per
-    proxy_addon.py's `running()`) — the Management API's credential status
-    endpoint and PUT-triggered cache invalidation are only meaningful if
-    they observe/act on the same in-memory state the interception path
-    actually executes commands against. Defaults to a fresh instance for
-    standalone use (`__main__.py`, tests).
+    `credential_cache` lets the caller share cache state with the interception
+    path when both run in one process. It defaults to a fresh instance for
+    standalone development.
     """
-    app = web.Application(middlewares=[error_middleware])
+    app = web.Application(client_max_size=128 * 1024 * 1024, middlewares=[error_middleware])
 
     conn = db.connect(config.db_path())
     db.migrate(conn)
@@ -40,12 +42,14 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
     app["ca_materialized"] = True
 
     app["credential_cache"] = credential_cache if credential_cache is not None else CredentialCache()
+    if daemon_status is not None:
+        app["daemon_status"] = daemon_status
 
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
 
-    # The WireGuard keys mitmdump's tunnel listener uses (tunnel.py). Created
-    # here too so standalone/dev runs report the same readiness as the unit.
+    # The WireGuard keys the tunnel listener uses (tunnel.py). Create them in
+    # standalone development as well as in the desktop daemon.
     try:
         tunnel.ensure_keys(config.tunnel_keys_path())
     except Exception:
@@ -54,6 +58,16 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
     app.add_routes(
         [
             web.get("/readyz", health_handlers.readyz),
+            web.get("/api/v1/status", system_handlers.status),
+            web.get("/api/v1/jetty/status", jetty_handlers.status),
+            web.post("/api/v1/jetty/setup", jetty_handlers.setup),
+            web.get("/api/v1/jetty/vms", jetty_handlers.list_vms),
+            web.post("/api/v1/jetty/vms", jetty_handlers.create_vm),
+            web.delete("/api/v1/jetty/vms/{name}", jetty_handlers.delete_vm),
+            web.post("/api/v1/jetty/vms/{name}/action", jetty_handlers.vm_action),
+            web.post("/api/v1/jetty/vms/{name}/exec", jetty_handlers.vm_exec),
+            web.post("/api/v1/jetty/vms/{name}/files", jetty_handlers.vm_upload),
+            web.get("/api/v1/jetty/ssh-config", jetty_handlers.ssh_config),
             web.get("/api/v1/ca", ca_handlers.get_ca),
             web.get("/api/v1/vms", vm_handlers.list_vms),
             web.get("/api/v1/vms/{name}", vm_handlers.get_vm),
@@ -82,7 +96,11 @@ def create_app(credential_cache: CredentialCache | None = None) -> web.Applicati
     async def index(_request: web.Request) -> web.FileResponse:
         return web.FileResponse(static_dir / "index.html")
 
+    async def setup_page(_request: web.Request) -> web.FileResponse:
+        return web.FileResponse(static_dir / "setup.html")
+
     app.router.add_get("/", index)
+    app.router.add_get("/setup", setup_page)
     app.router.add_static("/", static_dir, name="static")
 
     async def close_db(_app: web.Application) -> None:

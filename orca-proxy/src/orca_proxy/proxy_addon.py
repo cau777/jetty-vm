@@ -11,19 +11,17 @@ as the peer and the original destination as the server address, so this
 addon never talks TCP/TLS itself; it only makes policy decisions and does
 the SQLite/exec work around them.
 
-Also starts the Management API (app.create_app()) on mitmdump's own asyncio
-loop via the running()/done() addon hooks, satisfying #4's "same process"
-decision — `mitmdump -s proxy_addon.py` is the entire deployed service, one
-process, no separate aiohttp process to run or supervise. The embedded
-aiohttp app opens its own state.sqlite/requests.sqlite connections separate
-from this addon's own (below) — a small, deliberate duplication rather than
-threading one set of connections through two independently-hookable
-lifecycles; SQLite's WAL mode makes concurrent connections to the same file
-safe, so nothing correctness-sensitive depends on avoiding it.
+The source-installed compatibility entry point still starts the Management
+API from mitmproxy's running()/done() hooks. The desktop daemon instead runs
+that API unconditionally and supervises the proxy listener separately, so its
+UI remains available before the WireGuard network exists. Both lifecycles open
+their own state.sqlite/requests.sqlite connections; SQLite's WAL mode makes
+concurrent connections to the same files safe.
 """
 
 import base64
 import time
+from collections.abc import Callable
 from urllib.parse import parse_qsl, urlparse
 
 from aiohttp import web
@@ -54,7 +52,13 @@ PLAINTEXT_CREDENTIAL_MESSAGE = b"blocked by orca-proxy: credential rules only ap
 
 
 class OrcaProxyAddon:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        start_management_api: bool = True,
+        credential_cache: CredentialCache | None = None,
+        state_callback: Callable[[str], None] | None = None,
+    ) -> None:
         # Deliberately no I/O here — mitmproxy constructs `addons = [...]`
         # at *import* time, which would otherwise open real database
         # connections (against the default ~/.orca-proxy!) on a bare
@@ -64,11 +68,13 @@ class OrcaProxyAddon:
         self._state_conn = None
         self._requests_conn = None
         self._log = None
-        self._credentials = CredentialCache()
+        self._credentials = credential_cache or CredentialCache()
         self._api_runner: web.AppRunner | None = None
+        self._start_management_api = start_management_api
+        self._state_callback = state_callback
 
     def load(self, loader) -> None:
-        # Before mitmdump starts its WireGuard listener (running()): owner-only
+        # Before mitmproxy starts its WireGuard listener (running()): owner-only
         # keys, and never log the client private key mitmproxy prints.
         tunnel.install_log_filter()
         tunnel.ensure_keys(config.tunnel_keys_path())
@@ -81,16 +87,21 @@ class OrcaProxyAddon:
         self._log = request_log.RequestLog(self._requests_conn)
 
     async def running(self) -> None:
-        # Fires once mitmproxy's own proxy server is up — this is where the
-        # embedded Management API starts, on the same already-running loop.
-        self._api_runner = web.AppRunner(create_app(credential_cache=self._credentials))
-        await self._api_runner.setup()
-        site = web.TCPSite(self._api_runner, "127.0.0.1", config.management_api_port())
-        await site.start()
+        # The compatibility mode starts its API after mitmproxy is ready. The
+        # desktop daemon hosts the API independently before the listener.
+        if self._start_management_api:
+            self._api_runner = web.AppRunner(create_app(credential_cache=self._credentials))
+            await self._api_runner.setup()
+            site = web.TCPSite(self._api_runner, "127.0.0.1", config.management_api_port())
+            await site.start()
+        if self._state_callback:
+            self._state_callback("running")
 
     async def done(self) -> None:
         if self._api_runner is not None:
             await self._api_runner.cleanup()
+        if self._state_callback:
+            self._state_callback("stopped")
 
     # --- shared lookups (fresh-read each time — simplest correct v1
     # behavior; the DB is local SQLite, so this isn't the bottleneck it

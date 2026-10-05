@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,8 +28,66 @@ jobs:
           sed "s/^JETTY_RELEASE_VERSION=\"\"/JETTY_RELEASE_VERSION=\"${TAG}\"/" \
             install.sh > jetty-install.sh
           chmod +x jetty-install.sh
+
+      - name: Install AppImage and Qt build tools
+        run: >-
+          sudo apt-get update && sudo apt-get install -y squashfs-tools desktop-file-utils
+          libxcb-image0 libxcb-icccm4 libxcb-cursor0 libxcb-xkb1 libxcb-render-util0
+          libxkbcommon-x11-0 libxcb-keysyms1
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Build the frozen application
+        working-directory: orca-proxy
+        run: |
+          set -euo pipefail
+          uv sync --frozen --no-dev --group build
+          uv run pyinstaller --noconfirm --clean --distpath release/dist --workpath build/pyinstaller release/jetty.spec
+          appdir="$RUNNER_TEMP/Jetty.AppDir"
+          mkdir -p "$appdir/usr/lib" "$appdir/usr/bin" "$appdir/usr/share/applications" \
+            "$appdir/usr/share/icons/hicolor/scalable/apps" "$appdir/usr/share/jetty" \
+            "$appdir/usr/share/doc/jetty/licenses"
+          cp -a release/dist/jetty "$appdir/usr/lib/jetty"
+          install -m 0755 release/AppRun "$appdir/AppRun"
+          install -m 0644 release/Jetty.desktop "$appdir/Jetty.desktop"
+          install -m 0644 release/jetty.svg "$appdir/.DirIcon"
+          install -m 0644 release/jetty.svg "$appdir/usr/share/icons/hicolor/scalable/apps/jetty.svg"
+          install -m 0644 release/Jetty.desktop "$appdir/usr/share/applications/jetty.desktop"
+          desktop-file-validate "$appdir/Jetty.desktop"
+          desktop-file-validate "$appdir/usr/share/applications/jetty.desktop"
+          install -m 0644 ../VERSION "$appdir/usr/share/jetty/VERSION"
+          install -m 0644 release/THIRD_PARTY_NOTICES.md "$appdir/usr/share/doc/jetty/THIRD_PARTY_NOTICES.md"
+          cp release/licenses/*.txt "$appdir/usr/share/doc/jetty/licenses/"
+          pyinstaller_license="$(find .venv/lib -path '*pyinstaller-*.dist-info/licenses/COPYING.txt' -print -quit)"
+          test -n "$pyinstaller_license"
+          install -m 0644 "$pyinstaller_license" "$appdir/usr/share/doc/jetty/licenses/PyInstaller-COPYING.txt"
+          ln -s ../lib/jetty/jetty "$appdir/usr/bin/jetty"
+          printf '%s\n' "$appdir" > "$RUNNER_TEMP/jetty-appdir"
+      - name: Package AppImage
+        working-directory: orca-proxy
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          appdir="$(cat "$RUNNER_TEMP/jetty-appdir")"
+          curl -fsSL --retry 3 \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -o "$RUNNER_TEMP/appimagetool.AppImage"
+          chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
+          ARCH=x86_64 "$RUNNER_TEMP/appimagetool.AppImage" "$appdir" \
+            --output "$RUNNER_TEMP/jetty-x86_64.AppImage"
+          chmod +x "$RUNNER_TEMP/jetty-x86_64.AppImage"
+          sha256sum "$RUNNER_TEMP/jetty-x86_64.AppImage" > "$RUNNER_TEMP/jetty-x86_64.AppImage.sha256"
+      - name: Publish release assets
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           gh release create "$TAG" \
             --verify-tag \
             --title "Jetty $TAG" \
             --generate-notes \
-            "$bundle" "$bundle.sha256" jetty-install.sh
+            "jetty-${TAG}.tar.gz" "jetty-${TAG}.tar.gz.sha256" jetty-install.sh \
+            "$RUNNER_TEMP/jetty-x86_64.AppImage" "$RUNNER_TEMP/jetty-x86_64.AppImage.sha256"

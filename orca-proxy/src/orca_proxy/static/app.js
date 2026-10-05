@@ -11,6 +11,7 @@ const state = {
   selectedCredentialName: null,
   quickAddCatalog: [],
   ca: null,
+  jettyStatus: null,
   editor: null, // { kind: "rule"|"credential"|"vm", existingName, errors: {}, banner }
   loadError: null,
 };
@@ -43,6 +44,13 @@ async function loadEntities() {
     api("GET", "/api/v1/ca"),
   ]);
   state.vms = vms.vms;
+  try {
+    const instances = await api("GET", "/api/v1/jetty/vms");
+    const byName = new Map(instances.vms.map((vm) => [vm.name, vm]));
+    state.vms = vms.vms.map((vm) => ({ ...vm, status: byName.get(vm.name)?.status || "unknown" }));
+  } catch {
+    state.vms = vms.vms.map((vm) => ({ ...vm, status: "unknown" }));
+  }
   state.credentials = credentials.credentials;
   state.rules = rules.rules;
   state.ca = ca;
@@ -126,10 +134,10 @@ function navButton(view, label, count) {
 
 function vmsTable() {
   if (!state.vms.length) return `<div class="empty">No VMs registered yet.</div>`;
-  return `<table><thead><tr><th>Name</th><th>IP address</th><th>Rules</th><th>Registered</th></tr></thead><tbody>${state.vms
+  return `<table><thead><tr><th>Name</th><th>Status</th><th>IP address</th><th>Rules</th><th>Actions</th></tr></thead><tbody>${state.vms
     .map(
       (vm) =>
-        `<tr data-select data-vm="${esc(vm.name)}" class="${state.selectedVmName === vm.name ? "selected" : ""}"><td><strong>${esc(vm.name)}</strong></td><td class="mono">${esc(vm.ip_address)}</td><td>${rulesReferencingVm(vm.name)}</td><td class="muted tiny">${esc(vm.created_at)}</td></tr>`
+        `<tr data-select data-vm="${esc(vm.name)}" class="${state.selectedVmName === vm.name ? "selected" : ""}"><td><strong>${esc(vm.name)}</strong></td><td>${statusBadge(vm.status || "unknown", vm.status === "Running" ? "ok" : "warn")}</td><td class="mono">${esc(vm.ip_address)}</td><td>${rulesReferencingVm(vm.name)}</td><td><button class="button small" data-vm-action="${esc(vm.name)}" data-action="${vm.status === "Running" ? "stop" : "start"}">${vm.status === "Running" ? "Stop" : "Start"}</button> <button class="button small" data-vm-action="${esc(vm.name)}" data-action="restart">Restart</button></td></tr>`
     )
     .join("")}</tbody></table>`;
 }
@@ -175,7 +183,8 @@ function vmInspector() {
   const vm = state.vms.find((v) => v.name === state.selectedVmName);
   if (!vm) return `<div class="eyebrow">Selection inspector</div><p class="muted">Select a VM to inspect it.</p>`;
   return `<div class="inspector-header"><div><div class="eyebrow">VM</div><h2 style="margin:6px 0 3px">${esc(vm.name)}</h2></div><button class="button danger" data-delete-vm="${esc(vm.name)}">Delete</button></div>
-    <dl class="kv"><dt>IP address</dt><dd class="mono">${esc(vm.ip_address)}</dd><dt>Rules</dt><dd>${rulesReferencingVm(vm.name)}</dd><dt>Registered</dt><dd class="tiny">${esc(vm.created_at)}</dd></dl>`;
+    <dl class="kv"><dt>Status</dt><dd>${statusBadge(vm.status || "unknown", vm.status === "Running" ? "ok" : "warn")}</dd><dt>IP address</dt><dd class="mono">${esc(vm.ip_address)}</dd><dt>Rules</dt><dd>${rulesReferencingVm(vm.name)}</dd><dt>Registered</dt><dd class="tiny">${esc(vm.created_at || "—")}</dd></dl>
+    <div class="inspector-section"><button class="button" data-vm-action="${esc(vm.name)}" data-action="${vm.status === "Running" ? "stop" : "start"}">${vm.status === "Running" ? "Stop" : "Start"}</button> <button class="button" data-vm-action="${esc(vm.name)}" data-action="restart">Restart</button></div>`;
 }
 
 function credentialInspector() {
@@ -281,13 +290,17 @@ function vmEditorForm() {
   const errors = editor.errors || {};
   const values = editor.values;
   return `<form class="drawer" id="entity-form">
-    <div class="drawer-head"><div><div class="eyebrow">New VM</div><h2 style="margin:6px 0">Register a VM</h2></div><button type="button" class="icon-button" data-close-editor>✕</button></div>
+    <div class="drawer-head"><div><div class="eyebrow">New VM</div><h2 style="margin:6px 0">Create an agent VM</h2><p class="section-subtitle">Jetty launches an isolated LXD virtual machine and registers it with the proxy.</p></div><button type="button" class="icon-button" data-close-editor>✕</button></div>
     ${editor.banner ? `<div class="banner">${esc(editor.banner)}</div>` : ""}
     <div class="form-grid">
       <div class="${fieldClass(errors, "name")}"><label for="f-name">Name</label><input id="f-name" name="name" required value="${esc(values.name)}">${fieldError(errors, "name")}</div>
-      <div class="${fieldClass(errors, "ip_address")}"><label for="f-ip">IP address</label><input id="f-ip" name="ipAddress" required value="${esc(values.ipAddress)}" class="mono">${fieldError(errors, "ip_address")}</div>
+      <div class="${fieldClass(errors, "cpus")}"><label for="f-cpus">CPUs</label><input id="f-cpus" name="cpus" type="number" min="1" max="128" required value="${esc(values.cpus)}">${fieldError(errors, "cpus")}</div>
+      <div class="${fieldClass(errors, "memory")}"><label for="f-memory">Memory</label><input id="f-memory" name="memory" required value="${esc(values.memory)}" placeholder="8GiB">${fieldError(errors, "memory")}</div>
+      <div class="${fieldClass(errors, "disk")}"><label for="f-disk">Root disk</label><input id="f-disk" name="disk" required value="${esc(values.disk)}" placeholder="40GiB">${fieldError(errors, "disk")}</div>
+      <div class="${fieldClass(errors, "image")}"><label for="f-image">Ubuntu image alias</label><input id="f-image" name="image" required value="${esc(values.image)}">${fieldError(errors, "image")}</div>
+      <div class="field"><label for="f-ssh-key">SSH public key</label><textarea id="f-ssh-key" name="sshPublicKey" rows="3" placeholder="Optional if a standard ~/.ssh/*.pub key exists">${esc(values.sshPublicKey)}</textarea><small>The public key is copied to the VM. The private key stays on this computer.</small></div>
     </div>
-    <div class="form-actions"><button type="button" class="button" data-close-editor>Cancel</button><button type="submit" class="button primary">Save</button></div>
+    <div class="form-actions"><button type="button" class="button" data-close-editor>Cancel</button><button type="submit" class="button primary">Create VM</button></div>
   </form>`;
 }
 
@@ -303,7 +316,7 @@ function viewTitle() {
   return {
     rules: ["Rules", "Unique priority is the entire ordering. Lower numbers run first."],
     credentials: ["Credentials", "Commands run on the host; only cached status is ever exposed."],
-    vms: ["Virtual machines", "Registered sources subject to transparent outbound enforcement."],
+    vms: ["Virtual machines", "Create and manage isolated LXD agents."],
     logs: ["Request logs", "Every decision, including passthrough and default Allow."],
   }[state.activeView];
 }
@@ -334,6 +347,7 @@ function render() {
     <aside class="a-sidebar"><div class="brand"><span class="brand-mark"></span>orca-proxy</div><nav class="a-nav">${navButton("logs", "Logs", state.connections.length)}${navButton("rules", "Rules", state.rules.length)}${navButton("credentials", "Credentials", state.credentials.length)}${navButton("vms", "VMs", state.vms.length)}</nav></aside>
     <main class="a-main"><header class="a-main-header"><div><div class="eyebrow">Inventory</div><h1 class="section-title">${title[0]} <span class="count">${count}</span></h1><p class="section-subtitle">${title[1]}</p></div>${newButtonFor(state.activeView)}</header>
       ${state.loadError ? `<div class="banner">${esc(state.loadError)}</div>` : ""}
+      ${state.jettyStatus && state.jettyStatus.state !== "running" ? `<div class="banner info">Jetty status: ${esc(state.jettyStatus.state)} · <a href="/setup">Open setup</a></div>` : ""}
       ${toolbar}<div class="a-table-wrap">${currentViewTable()}</div></main>
     <aside class="a-inspector">${currentInspector()}</aside>
   </div>${editorDrawer()}`;
@@ -415,7 +429,13 @@ function openCredentialEditor() {
 }
 
 function openVmEditor() {
-  state.editor = { kind: "vm", existingName: null, errors: {}, banner: null, values: { name: "", ipAddress: "" } };
+  state.editor = {
+    kind: "vm",
+    existingName: null,
+    errors: {},
+    banner: null,
+    values: { name: "", cpus: 4, memory: "8GiB", disk: "40GiB", image: "ubuntu:24.04", sshPublicKey: "" },
+  };
   render();
 }
 
@@ -427,7 +447,8 @@ function closeEditor() {
 async function deleteEntity(kind, name) {
   if (!confirm(`Delete ${kind} "${name}"?`)) return;
   try {
-    await api("DELETE", `/api/v1/${kind}s/${encodeURIComponent(name)}`);
+    const path = kind === "vm" ? `/api/v1/jetty/vms/${encodeURIComponent(name)}` : `/api/v1/${kind}s/${encodeURIComponent(name)}`;
+    await api("DELETE", path);
     await loadEntities();
   } catch (err) {
     alert(`Could not delete: ${err.message}`);
@@ -477,9 +498,26 @@ async function submitCredentialForm(form) {
 async function submitVmForm(form) {
   const data = new FormData(form);
   const name = data.get("name");
-  await api("PUT", `/api/v1/vms/${encodeURIComponent(name)}`, { ip_address: data.get("ipAddress") });
+  await api("POST", "/api/v1/jetty/vms", {
+    name,
+    cpus: Number(data.get("cpus")),
+    memory: data.get("memory"),
+    disk: data.get("disk"),
+    image: data.get("image"),
+    ssh_public_key: data.get("sshPublicKey").trim(),
+  });
   await loadEntities();
   state.selectedVmName = name;
+}
+
+async function runVmAction(name, action) {
+  try {
+    await api("POST", `/api/v1/jetty/vms/${encodeURIComponent(name)}/action`, { action });
+    await loadEntities();
+  } catch (err) {
+    alert(`Could not ${action} ${name}: ${err.message}`);
+  }
+  render();
 }
 
 async function handleFormSubmit(event) {
@@ -521,6 +559,10 @@ function bind() {
   document.querySelectorAll("[data-edit-rule]").forEach((b) => b.addEventListener("click", () => openRuleEditor(b.dataset.editRule)));
   document.querySelectorAll("[data-delete-rule]").forEach((b) => b.addEventListener("click", () => deleteEntity("rule", b.dataset.deleteRule)));
   document.querySelectorAll("[data-delete-vm]").forEach((b) => b.addEventListener("click", () => deleteEntity("vm", b.dataset.deleteVm)));
+  document.querySelectorAll("[data-vm-action]").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    runVmAction(b.dataset.vmAction, b.dataset.action);
+  }));
   document.querySelectorAll("[data-delete-credential]").forEach((b) => b.addEventListener("click", () => deleteEntity("credential", b.dataset.deleteCredential)));
   document.querySelectorAll("[data-close-editor]").forEach((b) => b.addEventListener("click", closeEditor));
   document.querySelectorAll("[data-quick-add]").forEach((b) => b.addEventListener("click", () => applyQuickAdd(b.dataset.quickAdd)));
@@ -540,6 +582,7 @@ function bind() {
 async function init() {
   try {
     await Promise.all([loadEntities(), loadConnections(), loadQuickAddCatalog()]);
+    try { state.jettyStatus = await api("GET", "/api/v1/status"); } catch { state.jettyStatus = null; }
   } catch (err) {
     state.loadError = `Failed to load from the Management API: ${err.message}`;
   }

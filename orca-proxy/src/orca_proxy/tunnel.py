@@ -6,9 +6,9 @@ userspace WireGuard mode (`--mode wireguard:<keys>@<host>:<port>`). The
 gateway does no SNAT, so the addon still sees each VM's own source address.
 
 mitmproxy would generate this key file itself, but world-readable (0664) and
-it then logs the client config, private key included. orca-proxy instead
-creates the file 0600 before mitmdump starts (the unit's ExecStartPre) and
-filters that log line out (`install_log_filter`).
+it then logs the client config, private key included. Jetty creates the file
+0600 before the listener starts and filters that log line out
+(`install_log_filter`).
 """
 
 import json
@@ -59,7 +59,7 @@ def install_log_filter() -> None:
 
 
 def main(argv: list[str]) -> int:
-    """`ensure`: create/tighten the key file (unit ExecStartPre).
+    """`ensure`: create/tighten the key file before the listener starts.
     `gateway`: print the gateway's material as JSON (client private key and
     server public key), read by deploy/jetty-lxd as the same host user. It is
     never served over the Management API.

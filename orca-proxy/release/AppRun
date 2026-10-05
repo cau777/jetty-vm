@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+APPDIR="$(dirname "$(readlink -f "$0")")"
+export JETTY_RELEASE_VERSION="$(cat "$APPDIR/usr/share/jetty/VERSION")"
+if [ "$#" -eq 0 ]; then
+  if [ -x "$HOME/.local/bin/jetty" ]; then
+    set -- tray
+  else
+    set -- setup
+  fi
+fi
+exec "$APPDIR/usr/lib/jetty/jetty" "$@"

@@ -6,7 +6,7 @@
 #   ~/.local/share/jetty/releases/<ver>/   the release (its orca-proxy/.venv too)
 #   ~/.local/share/jetty/current           -> releases/<ver>; the only thing an
 #                                             upgrade or rollback repoints
-#   ~/.local/share/jetty/jetty.env         settings for jetty-lxd and the skill
+#   ~/.local/share/jetty/jetty.env         legacy helper settings
 #   ~/.<instance>/                         proxy state (DB, CA, tunnel keys);
 #                                             never touched by upgrades
 #   ~/.config/systemd/user/<instance>.service
@@ -80,10 +80,10 @@ restart_proxy() {
   # serving the previous release.
   systemctl --user restart "$SERVICE"
 
-  # The tunnel listener binds the host's address on jetty-lxd's uplink bridge;
-  # before `jetty-lxd setup` has created it the unit just keeps retrying.
+  # The daemon serves its UI before LXD setup and starts the proxy listener
+  # when the Jetty uplink address appears.
   if ! ip -4 -o addr show 2>/dev/null | grep -q ' 10\.201\.0\.1/'; then
-    echo "$SERVICE starts once 'jetty-lxd setup' creates the Jetty network."
+    echo "$SERVICE is running; the proxy listener starts after Jetty's gateway network is created."
     return
   fi
   sleep 3
@@ -158,6 +158,10 @@ else
   install_source "$SOURCE_DIR"
 fi
 chmod +x "$RELEASE_DIR/gh-rest/gh-rest.py" "$RELEASE_DIR/orca-proxy/deploy/jetty-lxd"
+install -D -m 0755 "$RELEASE_DIR/gh-rest/gh-rest.py" "$JETTY_HOME/gh-rest.py"
+install -D -m 0644 \
+  "$RELEASE_DIR/orca-proxy/src/orca_proxy/static/quick-add-catalog.json" \
+  "$JETTY_HOME/quick-add-catalog.json"
 
 echo "Preparing orca-proxy $JETTY_RELEASE_VERSION"
 (cd "$RELEASE_DIR/orca-proxy" && uv sync --no-dev --quiet)
@@ -177,13 +181,8 @@ After=network-online.target
 [Service]
 Environment=ORCA_PROXY_HOME=$DATA_DIR
 Environment=ORCA_PROXY_MANAGEMENT_PORT=$PORT
-# The WireGuard key file is created 0600 before mitmproxy could write its own.
-ExecStartPre=$PROXY/.venv/bin/python -m orca_proxy.tunnel ensure
-# Agent VMs reach the proxy only through the Jetty gateway VM's WireGuard
-# tunnel. 10.201.0.1 is the host's address on the uplink network jetty-lxd
-# creates; until it exists the bind fails and Restart= retries.
-ExecStart=$PROXY/.venv/bin/mitmdump --mode wireguard:$DATA_DIR/wireguard.json@10.201.0.1:51820 --set confdir=$DATA_DIR/mitm-confdir -s $PROXY/src/orca_proxy/proxy_addon.py
-Restart=always
+ExecStart=$PROXY/.venv/bin/jetty daemon
+Restart=on-failure
 RestartSec=5
 
 [Install]
@@ -196,6 +195,7 @@ export ORCA_PROXY_HOME=$DATA_DIR
 export ORCA_PROXY_MANAGEMENT_PORT=$PORT
 export ORCA_PROXY_SERVICE=$SERVICE
 export ORCA_PROXY_PYTHON=$PROXY/.venv/bin/python
+export JETTY_CLI=$PROXY/.venv/bin/jetty
 JETTY_RELEASE_DIR=$CURRENT
 JL=$PROXY/deploy/jetty-lxd
 API=http://127.0.0.1:$PORT/api/v1

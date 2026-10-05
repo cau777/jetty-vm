@@ -5,9 +5,8 @@ from pathlib import Path
 def data_dir() -> Path:
     """Resolve the app's data directory.
 
-    Defaults to ~/.orca-proxy (the runtime path fixed by the design spec's
-    service-installation decision). Overridable via ORCA_PROXY_HOME so tests
-    can isolate each run in a temp directory.
+    Defaults to ~/.orca-proxy. Overridable via ORCA_PROXY_HOME so separate
+    installs can use their own data directory and tests can isolate each run.
     """
     raw = os.environ.get("ORCA_PROXY_HOME")
     path = Path(raw) if raw else Path.home() / ".orca-proxy"
@@ -28,17 +27,17 @@ def management_api_port() -> int:
 
 
 def tunnel_keys_path() -> Path:
-    """WireGuard key file shared by mitmdump's wireguard mode (passed as the
-    mode's data argument in deploy/orca-proxy.service) and the gateway VM
-    setup (tunnel.py). Mode 0600; never under mitm-confdir, where mitmproxy
-    would create its own world-readable one.
+    """WireGuard key file shared by the listener and gateway setup.
+
+    Mode 0600; never under mitm-confdir, where mitmproxy would create its own
+    world-readable one.
     """
     return data_dir() / "wireguard.json"
 
 
 def mitm_confdir() -> Path:
-    """mitmproxy's own --set confdir path (deploy/orca-proxy.service) — a
-    subdirectory of data_dir(), not data_dir() itself, so ca_cert_path()
+    """mitmproxy's own `confdir` — a subdirectory of data_dir(), not
+    data_dir() itself, so ca_cert_path()
     can materialize into the exact spot mitmproxy's CertStore looks for its
     signing CA.
     """

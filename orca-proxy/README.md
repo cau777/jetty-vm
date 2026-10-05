@@ -1,42 +1,44 @@
 # orca-proxy
 
 The host-side policy proxy for Jetty VMs: Management API, Web UI, rule engine,
-Credential execution, request logging and the mitmproxy addon, all in one
-mitmdump process running as your own user. See `design.md` for the full spec.
+Credential execution, request logging, and the mitmproxy addon.
 
-Agent VMs run on LXD and reach it only through the Jetty gateway VM, which
-sends their TCP 80/443 into mitmdump's userspace WireGuard listener. Nothing
-here needs root, a capability-bearing helper, or host firewall rules.
+## Desktop runtime
 
-## Install (as a host service)
+The release AppImage contains the `jetty` CLI, daemon, tray, and QtWebEngine
+window. `jetty daemon` serves the loopback API and UI as soon as the user
+service starts, then starts and supervises mitmproxy when the Jetty uplink
+address exists. `jetty tray` polls the daemon and opens the same management UI
+in a native window. The tray and daemon are separate processes so a desktop
+failure does not stop VM web egress.
 
-Jetty's top-level `install.sh` installs this service; there is no separate
-installer. From a checkout, as your own user:
+LXD operations use its local Unix-socket REST API. Jetty manages the gateway,
+agent VMs, and the generated `~/.ssh/jetty_config` fragment. Local membership
+in the `lxd` group is root-equivalent on the host.
+
+## CLI
 
 ```bash
-bash install.sh                                  # or: --instance NAME --port PORT
-~/.local/share/jetty/current/orca-proxy/deploy/jetty-lxd setup
-~/.local/share/jetty/current/orca-proxy/deploy/jetty-lxd launch my-vm
+jetty status
+jetty gateway setup
+jetty vm create my-agent --cpus 4 --memory 8GiB --disk 40GiB
+jetty vm exec my-agent -- uname -a
+jetty vm upload my-agent /home/ubuntu/setup.sh --file ./setup.sh
 ```
 
-The service runs from `~/.local/share/jetty/current/orca-proxy` and keeps its
-state in `~/.<instance>` (default `~/.orca-proxy`). Its tunnel listener binds
-the host's address on the Jetty uplink network (`10.201.0.1`), so it keeps
-retrying until `jetty-lxd setup` has created that network. `jetty-lxd` reads
-`~/.local/share/jetty/jetty.env` for the instance's settings and needs your
-user in the `lxd` group; run it without arguments for its commands.
+Run `jetty --help` and `jetty vm --help` for the other lifecycle operations.
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest -v
-uv run python -m orca_proxy   # dev server on loopback, data dir defaults to ~/.orca-proxy
+uv run python -m orca_proxy   # Management API on loopback
 ```
 
 Set `ORCA_PROXY_HOME` to override the data directory (used by tests to isolate
-each run in a temp directory).
+each run in a temporary directory). The desktop release is built with
+`release/jetty.spec` and `.github/workflows/release.yml`.
 
-`tests/e2e/lxd-gateway-checks.sh` checks the whole topology against real VMs
-(identity, policy, spoofing, isolation, fail-closed); see its header for how to
-run it against a test proxy.
+`tests/e2e/lxd-gateway-checks.sh` checks the full topology against real VMs
+(identity, policy, spoofing, isolation, and fail-closed behavior); see its
+header for how to run it against a test proxy.
