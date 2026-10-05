@@ -1,0 +1,13 @@
+# PROTOTYPE — throwaway Lima instance for the user-mode-network egress test.
+base: template:ubuntu-24.04
+cpus: 2
+memory: 2GiB
+disk: 10GiB
+# QEMU from extracted .debs has no OVMF wired up; Ubuntu cloud images BIOS-boot fine.
+firmware:
+  legacyBIOS: true
+# plain: no host mounts (Lima mounts ~ by default!), no port forwards, no guest agent.
+plain: true
+# First usernet network replaces Lima's default slirp NIC, so this is the guest's only NIC.
+networks:
+  - lima: jetty-proto

@@ -1,6 +1,6 @@
 # Jetty
 
-**Permission-scoped Multipass VMs for coding agents.** Jetty gives an agent a
+**Permission-scoped LXD VMs for coding agents.** Jetty gives an agent a
 real, sudo-capable Linux machine to work in without giving that machine a copy
 of your host credentials.
 
@@ -15,50 +15,52 @@ Jetty combines two pieces:
 - `orca-ssh-setup` is an agent skill that provisions a project VM, installs
   the requested coding-agent tools, and connects the VM to an SSH-based agent
   workflow.
-- `orca-proxy` is a host-side service. It transparently directs a registered
-  VM's web traffic through a policy layer and injects a host-held credential
-  only for explicit VM, hostname, and path rules.
+- `orca-proxy` is a host-side service. It receives a registered VM's web
+  traffic through a gateway VM, applies a policy layer, and injects a
+  host-held credential only for explicit VM, hostname, and path rules.
 
 The result is a clear boundary: the coding agent can administer its VM, but it
 cannot read, copy, or reuse credentials held on the host. Network policy is
-enforced at the Multipass bridge, rather than relying on environment variables
-the agent can remove.
+enforced by the network topology itself, rather than by environment variables
+the agent can remove or by rules in the host's firewall: agent VMs sit on a
+private LXD network whose only way out is a Jetty gateway VM.
 
 ## How it works
 
 ```text
-your agent → dedicated Multipass VM → Jetty host policy → approved service
-                                      └─ host-held credential, only when a rule matches
+your agent → dedicated LXD VM → Jetty gateway VM ─(WireGuard)→ host orca-proxy → approved service
+                                                                  └─ host-held credential, only when a rule matches
 ```
 
 The host service has a loopback-only management API for registering VMs,
 credentials, and rules. Registered VMs do not receive management authority.
-Their HTTP(S) traffic is transparently redirected to the proxy; unmatched
-traffic is passed through without credentials.
+The gateway sends their HTTP(S) traffic (TCP 80/443) to the proxy through a
+WireGuard tunnel that ends in the unprivileged proxy process itself; unmatched
+traffic is passed through without credentials. If the proxy, the tunnel, or
+the gateway is down, agent VMs have no web egress at all.
 
 ## Use it
 
-Install the latest stable release, including its matching agent skill:
+Download the x86_64 AppImage and run setup as your desktop user:
 
 ```bash
-curl -fsSL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-install.sh | bash
+curl -fL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-x86_64.AppImage \
+  -o "$HOME/Downloads/jetty-x86_64.AppImage"
+chmod +x "$HOME/Downloads/jetty-x86_64.AppImage"
+"$HOME/Downloads/jetty-x86_64.AppImage" setup
 ```
 
-For a reproducible installation, substitute an exact release tag:
+Setup installs `~/.local/bin/jetty`, starts the per-user daemon, registers the
+tray app for desktop login, and installs the agent skill when `npx` is
+available. It uses `pkexec` to install and initialize snap LXD and add your
+account to the `lxd` group. LXD group access is equivalent to root access on
+the host. Sign out and back in after setup; reboot if the daemon still cannot
+access LXD afterward.
 
-```bash
-curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.2/jetty-install.sh | bash
-```
-
-The bootstrap verifies and keeps the matching Jetty source under
-`~/.local/share/jetty/releases/<version>/`, then uses `npx skills` to install
-`orca-ssh-setup` into your detected agents. To install the matching proxy in
-the same user-initiated command, add `--with-proxy`; it will request your sudo
-password:
-
-```bash
-curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.2/jetty-install.sh | bash -s -- --with-proxy
-```
+Use the tray menu to create the gateway, then manage agent VMs in Jetty. The
+same operations are available from a terminal with `jetty status`,
+`jetty gateway setup`, and `jetty vm create`. `jetty update` installs the
+latest release after verifying its published SHA-256 checksum.
 
 Then ask your preferred coding agent to set up a Jetty VM for the current
 project. For example:
@@ -76,24 +78,25 @@ the agent in the VM.
 
 ## Prerequisites
 
-- Linux host with [Multipass](https://multipass.run) installed.
-- `git`, `curl`, and either Codex or Claude Code on the host.
-- A user able to run the one-time `orca-proxy` installation with `sudo` when
-  the VM needs host-held credentials or enforced HTTP(S) policy.
+- Ubuntu 22.04 or newer on x86_64, with a desktop session and `snapd`.
+- A Polkit authentication agent for the one-time `pkexec` prompts.
+- `npx` to install the skill automatically. Without it, install
+  `orca-ssh-setup/` into your coding agent using that agent's skill manager.
+- Codex or Claude Code on the host if you want to use those harnesses.
 
-The proxy is shared by all Jetty VMs on one host. Its privileged firewall
-helper is installed as a root-owned file; the proxy service itself runs as a
-regular user.
+The proxy daemon and tray run as your user. LXD owns the bridges, and routing
+policy lives inside the gateway VM; Jetty does not install a host firewall
+rule or privileged helper.
 
 ## Project layout
 
 - [`orca-ssh-setup/`](orca-ssh-setup/) — the installable agent skill and
   end-to-end provisioning workflow.
-- [`orca-proxy/`](orca-proxy/) — policy service, management UI, transparent
-  proxy, credential execution, and firewall integration.
+- [`orca-proxy/`](orca-proxy/) — daemon, tray, management UI, LXD REST client,
+  CLI, transparent proxy, and credential execution.
 - [`CONTEXT.md`](CONTEXT.md) — the project's domain vocabulary.
 
-For service development and manual installation, see
+For development and the source installer, see
 [`orca-proxy/README.md`](orca-proxy/README.md).
 
 ## Security model
@@ -103,3 +106,8 @@ with broad authority inside its own VM. It reduces credential exposure; it is
 not a general-purpose network sandbox or a substitute for reviewing the
 permissions you grant in each rule. Keep rules specific to the VM, hostname,
 path, and operation the agent needs.
+
+On Ubuntu hosts that restrict unprivileged user namespaces, Jetty disables
+QtWebEngine's renderer sandbox so the management window can start. That window
+only loads Jetty's loopback management UI; the tray opens other links in the
+system browser.

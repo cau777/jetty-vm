@@ -7,12 +7,19 @@ dependencies = [
     "aiohttp>=3.9",
     "cryptography>=42",
     "mitmproxy>=10,<11",
+    "PySide6==6.11.2",
 ]
+
+[project.scripts]
+jetty = "orca_proxy.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-aiohttp>=1.0",
+]
+build = [
+    "pyinstaller>=6.16,<7",
 ]
 
 [build-system]

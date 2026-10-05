@@ -1,6 +1,6 @@
 ---
 name: orca-ssh-setup
-description: Provision a Multipass VM as an SSH run target for the current project (with coding-agent harnesses and git/gh CLI wired to the host-side orca-proxy credential-injection & logging proxy) and connect it to Orca (onorca.dev) as an SSH-type project.
+description: Set up a Jetty-managed LXD VM as an SSH run target for the current project, install its toolchain and requested coding-agent harnesses, and connect it to Orca as an SSH project.
 ---
 
 # Orca SSH Project Setup
@@ -12,10 +12,11 @@ on a dedicated local VM instead of their laptop, connected via SSH (Orca's
 Scope note: this is **one long-lived VM per project**, reused across
 worktrees/branches.
 
-The end state: a running Multipass VM, reachable over SSH with key-based auth,
-with the project's toolchain **and** the requested coding-agent harness(es)
-installed, its outbound traffic transparently enforced by the host-side
-**orca-proxy** service (no explicit proxy configuration inside the VM), and
+The end state: a running LXD VM, reachable over SSH with key-based auth
+(through the Jetty gateway VM), with the project's toolchain **and** the
+requested coding-agent harness(es) installed, its outbound traffic
+transparently enforced by the host-side **orca-proxy** service (no explicit
+proxy configuration inside the VM), and
 the user knows exactly what to click/type in Orca to register it and start a
 worktree on it.
 
@@ -55,9 +56,8 @@ Do not assume. Confirm at minimum:
   (kebab-case, e.g. `orca-<reponame>`), but let the user override it.
 - **VM resources** — default proposal: 4 CPUs, 8GB RAM, 40GB disk. Ask if the
   workload (large builds, ML training, big monorepo) needs more.
-- **Base Ubuntu image** — default to the latest Multipass LTS image (check
-  `multipass find` for the current default, e.g. `24.04`) unless the repo
-  needs a specific OS version.
+- **Base Ubuntu image** — default to the latest LTS (`ubuntu:24.04`) unless
+  the repo needs a specific OS version.
 - **Which coding-agent harness(es) to install** — Codex CLI (`@openai/codex`),
   Claude Code (`@anthropic-ai/claude-code`), both, or neither. This decides
   what step 4 installs and whether steps 3/6 (orca-proxy) run at all. Default
@@ -77,82 +77,60 @@ Do not assume. Confirm at minimum:
   Do not ask the user to paste secrets into chat; ask *how* they want to
   deliver them.
 - **Networking specifics** — anything the VM needs to reach (VPN, internal
-  services) that isn't reachable by default from a Multipass VM.
+  services). Jetty VMs **cannot** reach private addresses (RFC1918, the
+  host, the LAN, Tailscale/CGNAT), other Jetty VMs, or IPv6 at all; if the
+  project needs any of that, stop and tell the user rather than working
+  around it.
 
 Only proceed to provisioning once these are settled.
 
 ## 3. Set up the host-side orca-proxy service and register Credentials
 
-Skip this step entirely if step 2 established the VM needs no coding-agent
-harness and no GitHub access.
+Always do 3a and 3b: every Jetty VM depends on orca-proxy and the gateway.
+Skip 3c and 3d if step 2 established the VM needs no coding-agent harness and
+no GitHub access.
 
 Coding-agent and GitHub credentials must **not** be baked into the VM — a
 live provider session sitting on a machine that an agent runs with full sudo
 on is a bad combination, and it means every rebuild/recreate of the VM costs
 another interactive login. **orca-proxy** is the host-side app that replaces
 the previous CLIProxyAPI broker and mitmproxy gh-proxy combination with one
-unified service: it forces all outbound 80/443 traffic from each registered
-VM through itself via host-side DNAT (agent-proof — a VM's root user cannot
-bypass it), and injects a live Credential Value only into requests matching
-an explicit Rule. It runs once per *machine* (share it across every project
+unified service. Jetty VMs sit on a private LXD network whose only exit is
+the Jetty gateway VM, which sends all their outbound 80/443 into orca-proxy
+(agent-proof — a VM's root user cannot bypass it), and orca-proxy injects a
+live Credential Value only into requests matching an explicit Rule. It runs once per *machine* (share it across every project
 VM, not per project).
 
-**3a. Check for an existing installation first** — it may already be running
-from a previous project:
+**3a. Connect to the installed Jetty app.** Jetty installs the `jetty`
+command and starts a per-user daemon. Set its loopback Management API URL:
 
 ```bash
-systemctl --user status orca-proxy.service
+JETTY="${JETTY_CLI:-$HOME/.local/bin/jetty}"
+API="http://127.0.0.1:8080/api/v1"
+JETTY_TOOLS_DIR="$HOME/.local/share/jetty"
+curl -fsS "${API%/api/v1}/readyz"
 ```
 
-If active, skip straight to 3c — do not reinstall or restart a service that
-may already be enforcing other projects' VMs.
+Use these variables in each shell that runs the remaining commands.
 
-**3b. If absent, install it.** The install script must run as root in its
-entirety, not just for two small steps — it installs the firewall-sync
-helper to a root-owned location outside the target user's home directory,
-which only root can arrange (a NOPASSWD sudoers entry pointing at anything
-writable by the user it names is a straight escalation, which an earlier
-version of this install had).
+The Management API is available before gateway setup. `/readyz` remains
+unready until Jetty's network exists and the proxy listener is running.
 
-**Never attempt this with `sudo -n`, even if it happens to succeed
-passwordlessly.** Unlike the sudoers-gated firewall-sync helper the
-Management API calls routinely (safe to auto-invoke *because* it's a
-root-owned binary with pinned arguments the `cau777` account cannot
-influence), `install.sh` is an arbitrary, user-writable script — running it
-as root without a human typing their password would just re-create the same
-escalation shape one level up (anything that can write to this checkout
-could get root, unattended, the moment a general passwordless-sudo grant
-exists for any reason). Installing/upgrading orca-proxy is a deliberate,
-human-authorized action, full stop — hand the user the exact command and
-wait for them to run it themselves:
-
-The installed Jetty skill includes a version file. Read it and direct the user
-to the matching persisted release source — never a checkout's `main` branch or
-a mutable raw-GitHub URL:
+**3b. If the Jetty daemon is missing**, stop and hand the user these
+installation commands. They run as the desktop user:
 
 ```bash
-JETTY_RELEASE_DIR="$HOME/.local/share/jetty/releases/v1.0.0"
-echo "Need one-time root access to install the matching orca-proxy — please run:" >&2
-echo "  sudo env ORCA_PROXY_VERSION=$(basename "$JETTY_RELEASE_DIR") bash $JETTY_RELEASE_DIR/orca-proxy/deploy/install.sh" >&2
+curl -fL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-x86_64.AppImage \
+  -o "$HOME/Downloads/jetty-x86_64.AppImage"
+chmod +x "$HOME/Downloads/jetty-x86_64.AppImage"
+"$HOME/Downloads/jetty-x86_64.AppImage" setup
 ```
 
-If the skill was installed by another method and that directory is absent, ask
-the user to install a Jetty release first; do not substitute an unpinned source.
-
-Everything *unprivileged* (the venv, the systemd **user** unit, the data
-directory) still ends up owned by and running as the invoking user, not
-root — only the sudoers file and the firewall-sync helper's install
-location need the elevated run. Upgrading later is the same command, run
-again by the user — there is no passwordless path left that reprovisions
-the privileged half on its own, by design (see the installed orca-proxy
-repo's `design.md`).
-
-Confirm it's actually ready before continuing — this is more than "is the
-process running," it also covers migrations and CA materialization:
-
-```bash
-curl -fsS http://127.0.0.1:8080/readyz
-```
+The setup command installs the AppImage under `~/.local/bin/jetty`, starts
+the daemon, installs LXD if needed, and adds the user to the `lxd` group. If
+it reports that a new login is needed, have the user sign out and back in,
+then resume this skill. If Jetty still cannot access LXD, reboot so the
+lingering user manager receives the new group membership.
 
 **3c. Ensure the needed Credentials exist.** Credential creation is a plain
 `PUT` the Provisioning Agent issues directly — it is not gated behind the
@@ -162,14 +140,14 @@ Management API, not a separate mechanism. Read the source-of-truth catalog
 hardcoding command strings here:
 
 ```bash
-CATALOG=~/.orca-proxy/current/source/src/orca_proxy/static/quick-add-catalog.json
+CATALOG="$JETTY_TOOLS_DIR/quick-add-catalog.json"
 
 put_credential() {
   local key="$1" entry command ttl
   entry=$(jq -c --arg k "$key" '.[] | select(.key == $k)' "$CATALOG")
   command=$(echo "$entry" | jq -r .command)
   ttl=$(echo "$entry" | jq -r .ttl_seconds)
-  curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/credentials/${key}" \
+  curl -fsS -X PUT "$API/credentials/${key}" \
     -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg cmd "$command" --argjson ttl "$ttl" '{command: $cmd, ttl_seconds: $ttl}')"
 }
@@ -184,6 +162,14 @@ This is idempotent — safe to rerun on every project's setup; it never
 touches the live cached value (per the Credential execution engine), only
 the command string and TTL.
 
+The Claude Code and Codex Credentials refresh the host's own logins
+(`~/.claude/.credentials.json`, `~/.codex/auth.json`), and that rotates the
+token. Anything else that refreshes the same login (the user's own `claude`
+or `codex` on the host, or a side-by-side Multipass-era proxy) can revoke the
+access token orca-proxy has cached. orca-proxy drops a cached value as soon
+as upstream rejects it with 401, so the next request refetches it; a single
+failed turn right after such a refresh is expected and recovers by itself.
+
 **3d. Do not perform the interactive login yourself.** Authentication is an
 interactive OAuth/device flow (or, for GitHub, `gh auth login`) that needs
 the user's own browser session. Check each Credential's live status first —
@@ -191,10 +177,12 @@ it may already be valid from a previous project's setup on this same host —
 and only ask the user to log in if it isn't:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/api/v1/credentials/github-host-login | jq -r .status
+curl -fsS "$API/credentials/github-host-login" | jq -r .status
+# "empty" just means nothing is cached yet; "error" needs the user's login.
 ```
 
-Hand the user the exact command for whichever Credential isn't yet `valid`:
+Hand the user the exact command for whichever Credential is in `error`
+(for `empty`, the first real request in step 6 tells you):
 
 - `github-host-login` → `gh auth login` (on the **host**, not the VM)
 - `claude-code-subscription` → run `claude` and log in (on the **host**)
@@ -204,20 +192,44 @@ Tell the user this only needs to happen **once per machine, ever** — not per
 project, not per rebuild. Credential Values are picked up live on the next
 request; no restart needed after login.
 
-## 4. Create a properly named Multipass VM
+## 4. Create a properly named LXD VM
 
-Check Multipass is installed first (`multipass version`); if not, stop and
-tell the user to install it (https://multipass.run) before continuing.
+Check that Jetty can access LXD with `"$JETTY" status`. If LXD is unavailable,
+ask the user to run `"$JETTY" setup` and sign out and back in if requested.
+LXD group access grants root-equivalent control of the host, so the user must
+authorize that setup themselves.
 
-Launch the VM with the confirmed name and sizing:
+If the user created the VM in the Jetty app (Jetty's handoff prompt says
+so), do not create another one. Confirm it with `"$JETTY" vm list`, skip the
+name, sizing and image questions in step 2, and skip `vm create` below.
+
+All VM lifecycle goes through the Jetty app's loopback API:
 
 ```bash
-multipass launch <image> \
-  --name <vm-name> \
-  --cpus <n> \
-  --memory <n>G \
-  --disk <n>G
+"$JETTY" gateway setup     # creates the LXD project, networks and gateway VM
+curl -fsS "${API%/api/v1}/readyz"
+"$JETTY" status    # expect the gateway service active and a recent handshake
 ```
+
+Gateway setup takes a few minutes the first time while LXD downloads the
+Ubuntu image and cloud-init installs the gateway tools. The daemon starts the
+proxy listener when the network becomes available. Do not continue unless
+`/readyz` returns `"ready": true` and status shows a recent handshake. Then
+create the VM with the confirmed name and sizing:
+
+```bash
+"$JETTY" vm create <vm-name> --cpus <n> --memory <n>GiB --disk <n>GiB --image ubuntu:24.04
+```
+
+`vm create` authorizes the host user's SSH key (`~/.ssh/id_ed25519.pub` by
+default, `--ssh-key PATH.pub` otherwise), gives the VM a fixed address
+(`10.202.0.11` upward), registers it with orca-proxy before it first boots,
+and installs the Interception CA into its trust store. It waits for
+cloud-init to finish. Run noninteractive commands inside it as the `ubuntu`
+user (passwordless sudo) with `"$JETTY" vm exec <vm-name> -- ...`. To copy a
+file, use `"$JETTY" vm upload <vm-name> <guest-path> [--file HOST_PATH]`;
+without `--file`, upload reads stdin. Add `--owner root --mode 0755` for
+root-owned executables.
 
 **Required, unconditionally, before Orca ever connects:** install a C/C++
 build toolchain. This has nothing to do with the target repo's own language —
@@ -235,12 +247,13 @@ reconnect. ...
 Install it now so day-one connections work:
 
 ```bash
-multipass exec <vm-name> -- sudo apt-get update -qq
-multipass exec <vm-name> -- sudo apt-get install -y -qq build-essential python3
+"$JETTY" vm exec <vm-name> -- sudo apt-get update -qq
+"$JETTY" vm exec <vm-name> -- sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential python3 git jq
 ```
 
 (`build-essential` pulls in `make` and `g++`; `python3` is the one
-`node-gyp` dependency it doesn't already include.)
+`node-gyp` dependency it doesn't already include. `git` and `jq` are needed
+later for the repo and for `gh`.)
 
 If the user already added the host in Orca and hit this error *before* these
 were installed: installing them now is not enough by itself — Orca cached the
@@ -249,22 +262,21 @@ and re-add it under **Settings → SSH**, or use its "reconnect" action if one
 is shown) so it retries the `node-pty` build against the now-present
 toolchain; no VM or sshd restart is needed.
 
-Then mount or clone the repo into the VM. Prefer cloning fresh inside the VM
-over a live host mount, since Orca agents will run natively inside the VM and
-a real git checkout avoids filesystem-passthrough edge cases:
+Then clone the repo into the VM. Prefer cloning fresh inside the VM over a
+live host mount, since Orca agents will run natively inside the VM and a real
+git checkout avoids filesystem-passthrough edge cases:
 
 ```bash
-multipass exec <vm-name> -- bash -c 'git clone <repo-url> ~/<reponame>'
+"$JETTY" vm exec <vm-name> -- bash -c 'git clone <repo-url> ~/<reponame>'
 ```
 
 (Wrap in `bash -c '...'` rather than passing `~/<reponame>` as a bare
-argument — `multipass exec` does not itself invoke a shell, so an unquoted
-`~` gets expanded by the *host's* shell before multipass ever sees it,
-producing a path under the host's home directory instead of the VM's.)
+argument — `jetty vm exec` does not itself invoke a shell, so an unquoted
+`~` gets expanded by the *host's* shell first, producing a path under the
+host's home directory instead of the VM's.)
 
-If the repo isn't pushed anywhere the VM can reach, use
-`multipass mount <host-path> <vm-name>:<vm-path>` instead and note this as a
-deviation to the user.
+If the repo isn't pushed anywhere the VM can reach, ask the user to publish
+it to a remote the VM can reach before continuing.
 
 Install the toolchain identified in step 1 inside the VM (language runtime at
 the pinned version, package manager, system libs), then install project
@@ -277,20 +289,23 @@ requires node >=22; npm only warns, not fails, on an older node, so this must
 be right at install time rather than caught later):
 
 ```bash
-multipass exec <vm-name> -- bash -c '
+"$JETTY" vm exec <vm-name> -- bash -c '
   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - &&
   sudo apt-get install -y -qq nodejs
 '
 # then, per harness requested:
-multipass exec <vm-name> -- sudo npm install -g @openai/codex
-multipass exec <vm-name> -- sudo npm install -g @anthropic-ai/claude-code
+"$JETTY" vm exec <vm-name> -- sudo npm install -g @openai/codex
+"$JETTY" vm exec <vm-name> -- sudo npm install -g @anthropic-ai/claude-code
 ```
+
+Write each instructions file below by uploading it, e.g.
+`printf '%s\n' "$NOTE" | "$JETTY" vm upload <vm-name> /home/ubuntu/.claude/CLAUDE.md`.
 
 Drop a short note into each installed harness's global instructions file
 (`~/.codex/AGENTS.md` for codex, `~/.claude/CLAUDE.md` for claude-code — never
 the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
 
-- It's running in a disposable-feeling but actually persistent Multipass VM
+- It's running in a disposable-feeling but actually persistent VM
   with full sudo, so the agent doesn't over-hedge on system changes.
 - If GitHub access was requested, `gh` here is **not** the real GitHub CLI —
   it's `gh-rest.py` (see step 6), installed at `/usr/local/bin/gh`, which
@@ -306,87 +321,87 @@ the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
 
 ## 5. Set up SSH access
 
-Multipass VMs run SSH by default but Orca needs a real, host-reachable
-SSH endpoint with key-based auth (not `multipass shell`/`multipass exec`,
-which tunnel through the Multipass daemon instead of plain SSH).
+The host has no address on the agent network. Instead, the gateway forwards
+one port per VM to that VM's SSH (`10.201.0.2`, port 2200 + the last octet of
+the VM's address), accepting only the host. That is still a single, ordinary
+SSH connection. `jetty vm create` already authorized the key; generate the matching
+`~/.ssh/config` entries:
 
-1. Get the VM's IP:
-   ```bash
-   multipass info <vm-name> | grep IPv4
-   ```
-2. Ensure the user has an SSH keypair (`~/.ssh/id_ed25519` or similar); if
-   not, generate one (`ssh-keygen -t ed25519`).
-3. Authorize that public key inside the VM:
-   ```bash
-   multipass exec <vm-name> -- bash -c \
-     'mkdir -p ~/.ssh && echo "<contents of id_ed25519.pub>" >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys'
-   ```
-4. Verify from the host:
-   ```bash
-   ssh -i ~/.ssh/id_ed25519 ubuntu@<vm-ip> echo ok
-   ```
-   (default Multipass user is `ubuntu` unless the user customized it).
-5. Note that the VM's IP can change across host reboots unless the user has
-   set a static IP/DHCP reservation — flag this to the user, since a changed
-   IP will break both the Orca SSH target and the VM's registration with
-   orca-proxy (step 6) until updated.
+```bash
+"$JETTY" ssh-config    # entries for the gateway and every Jetty VM
+```
 
-Do not proceed to step 6 until the `ssh ... echo ok` check above succeeds.
+Jetty writes the generated entries to `~/.ssh/jetty_config` after gateway
+setup and VM create/delete, then adds a top-level `Include jetty_config` to
+`~/.ssh/config` if needed. It preserves the rest of the user's config. Do not
+rewrite either file yourself. If the user's private key is not available to
+the SSH agent or a standard SSH key lookup, ask which `IdentityFile` they
+want to use and have them add that setting to their Jetty host entries.
+
+Each VM entry carries `HostKeyAlias <vm-name>`, so its host key is stored
+under the VM's name. Accept it on first use, then verify:
+
+```bash
+ssh -o StrictHostKeyChecking=accept-new <vm-name> echo ok
+```
+
+If a VM with the same name was deleted and recreated, remove the old key
+first (`ssh-keygen -R <vm-name>`); a "host key verification failed" error
+after a re-launch means exactly that.
+
+Both the VM's address and the gateway's are fixed, so these entries survive
+reboots.
+
+Orca does not read these entries (step 7). It connects to the VM's own address
+(`"$JETTY" vm ip <vm-name>`) through the gateway as a jump host, using the system
+`ssh` with no terminal, so the VM's host key must also be trusted **under that
+IP**; the alias above doesn't count, and Orca fails with "Host key
+verification failed" (plus a harmless `ssh_askpass` error). `known_hosts` is
+usually hashed, so add the entry with `ssh-keyscan` rather than editing text.
+Fetch the key through the gateway, and compare its fingerprint with the one
+the VM reports over the verified `ssh <vm-name>` connection before trusting it:
+
+```bash
+VM_IP=$("$JETTY" vm ip <vm-name>)
+ssh ubuntu@10.201.0.2 "ssh-keyscan -t ed25519 $VM_IP 2>/dev/null" > "$TMPDIR/hk"
+ssh-keygen -lf "$TMPDIR/hk"
+ssh <vm-name> 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub'   # must match
+cp ~/.ssh/known_hosts ~/.ssh/known_hosts.bak && cat "$TMPDIR/hk" >> ~/.ssh/known_hosts
+ssh -o BatchMode=yes -J ubuntu@10.201.0.2 ubuntu@$VM_IP echo ok
+```
+
+If a VM with the same name was deleted and recreated, its address may be
+reused with a new key; `ssh-keygen -R <vm-ip>` first.
+
+Do not proceed to step 6 until `ssh <vm-name> echo ok` and the jump-host
+command above both succeed.
 
 ## 6. Register the VM with orca-proxy and wire the harness(es), git, and gh
 
-Skip this step entirely if step 3 was skipped (no harness, no GitHub access).
+Skip this step entirely if steps 3c and 3d were skipped (no harness, no GitHub access).
 
-### Register the VM and confirm enforcement
+### Confirm registration
 
-```bash
-VM_IP=$(multipass info <vm-name> | awk '/IPv4/{print $2}')
-curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/vms/<vm-name>" \
-  -H 'Content-Type: application/json' -d "{\"ip_address\": \"${VM_IP}\"}"
-```
-
-This alone triggers firewall reconciliation — DNAT now forces this VM's
-outbound 80/443 through orca-proxy. Poll `/readyz` until this specific VM's
-firewall status is `in_sync` before doing anything else — there's no safe
-way to proceed with Rules while this VM's enforcement is unconfirmed, so
-fail loud rather than continue past a timeout:
+`jetty vm create` already registered the VM. Confirm it, and that the
+proxy is ready:
 
 ```bash
-# No -f here: /readyz legitimately returns 503 while still unsynced, and the
-# body — which -f would discard — is exactly what this loop needs to read.
-SYNCED=""
-for i in $(seq 1 15); do
-  SYNCED=$(curl -sS http://127.0.0.1:8080/readyz | jq -r --arg vm "<vm-name>" '.firewall_status[$vm] // "missing"')
-  [ "$SYNCED" = "in_sync" ] && break
-  sleep 2
-done
-[ "$SYNCED" = "in_sync" ] || {
-  echo "firewall sync did not complete for <vm-name> — resolve before continuing" >&2
-  exit 1
-}
+curl -fsS "$API/vms/<vm-name>"
+curl -fsS "${API%/api/v1}/readyz"
 ```
 
-Install the Interception CA into the VM's system trust store — required for
-Allow-with-credential hosts to work transparently. Piping through
-`multipass exec` as base64 sidesteps the same snap-confinement
-`multipass transfer` permission error the previous gh-proxy setup worked
-around:
-
-```bash
-B64=$(curl -fsS http://127.0.0.1:8080/api/v1/ca | jq -r .certificate_pem | base64 -w0)
-multipass exec <vm-name> -- bash -c "echo '$B64' | base64 -d | sudo tee /usr/local/share/ca-certificates/orca-proxy-ca.crt > /dev/null && sudo update-ca-certificates"
-```
-
-(Trust is verified below, once a Rule exists to actually exercise it through
-— confirming "the file landed" isn't enough, per the CA lifecycle decision.)
+`jetty vm create` also installed the Interception CA into the VM's system trust
+store. Trust is verified below, once a Rule exists to actually exercise it
+through — confirming "the file landed" isn't enough, per the CA lifecycle
+decision.
 
 ### Create Rules for this project
 
-Narrow to exactly what step 2 confirmed. Check `GET /api/v1/rules` for
+Narrow to exactly what step 2 confirmed. Check `curl -fsS "$API/rules"` for
 priorities already in use — duplicates are rejected with `409`. For GitHub:
 
 ```bash
-curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-api" \
+curl -fsS -X PUT "$API/rules/<vm-name>-github-api" \
   -H 'Content-Type: application/json' -d '{
     "priority": <next available>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
@@ -410,7 +425,7 @@ curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-api" \
 # to default-Allow passthrough with no credential injected, so it reaches
 # GitHub for real and gets a real "Invalid username or token" back, not an
 # obvious proxy-side error):
-curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-git" \
+curl -fsS -X PUT "$API/rules/<vm-name>-github-git" \
   -H 'Content-Type: application/json' -d '{
     "priority": <next available>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
@@ -424,7 +439,7 @@ For Claude Code (only if requested) — the real inference host, confirmed
 from the shipped CLI itself, not a broker:
 
 ```bash
-curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-claude" \
+curl -fsS -X PUT "$API/rules/<vm-name>-claude" \
   -H 'Content-Type: application/json' -d '{
     "priority": <next available>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
@@ -439,7 +454,7 @@ For Codex (only if requested) — `chatgpt.com`, not `api.openai.com`: the
 tokens, which is a different inference host than API-key mode:
 
 ```bash
-curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-codex" \
+curl -fsS -X PUT "$API/rules/<vm-name>-codex" \
   -H 'Content-Type: application/json' -d '{
     "priority": <next available>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
@@ -454,7 +469,7 @@ curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-codex" \
 This is the key behavior change from the old CLIProxyAPI-broker setup:
 neither harness needs a custom base URL, a custom `config.toml` provider
 pointed at a broker, or any credential the VM's client itself treats as
-real. DNAT already forces their real, default outbound traffic through
+real. The gateway already forces their real, default outbound traffic through
 orca-proxy transparently; each just needs a placeholder credential on its
 own native auth surface so it sends a real request with *something* for the
 Rule above to overwrite.
@@ -465,7 +480,7 @@ isn't just simpler, it's strictly better: an explicit non-default
 Anthropic's own docs):
 
 ```bash
-multipass exec <vm-name> -- bash -c "
+"$JETTY" vm exec <vm-name> -- bash -c "
   sudo sed -i '/^ANTHROPIC_AUTH_TOKEN=/d' /etc/environment
   printf 'ANTHROPIC_AUTH_TOKEN=placeholder\n' | sudo tee -a /etc/environment >/dev/null
   printf 'export ANTHROPIC_AUTH_TOKEN=placeholder\n' | sudo tee /etc/profile.d/orca-proxy-claude.sh >/dev/null
@@ -478,7 +493,7 @@ instead of the broker (this exact mechanism is what's already proven to
 work for the subscription mode the Codex Credential targets):
 
 ```bash
-multipass exec <vm-name> -- bash -c "
+"$JETTY" vm exec <vm-name> -- bash -c "
   mkdir -p ~/.codex
   cat > ~/.codex/config.toml <<'TOML'
 model_provider = \"hostproxy\"
@@ -504,7 +519,7 @@ handshake completed and the response has an `Orca Local Interception CA`
 issuer, not that the HTTP status is 2xx:
 
 ```bash
-multipass exec <vm-name> -- bash -lc '
+"$JETTY" vm exec <vm-name> -- bash -lc '
   curl -sS -o /dev/null https://api.anthropic.com/ \
     && echo "CA trust OK (a non-2xx status here is expected and fine — this only confirms curl completed the TLS handshake without a certificate error)"
 '
@@ -515,12 +530,15 @@ here rather than let the user discover a bare auth error on the harness's
 first real turn:
 
 ```bash
-multipass exec <vm-name> -- bash -lc 'claude -p "say ok" --output-format text'
-multipass exec <vm-name> -- bash -lc 'codex exec "say ok"'
+"$JETTY" vm exec <vm-name> -- bash -lc 'claude -p "say ok" --output-format text'
+"$JETTY" vm exec <vm-name> -- bash -lc 'cd ~/<reponame> && codex exec "say ok"'
 ```
 
-If either fails, check `curl http://127.0.0.1:8080/readyz` and that
-Credential's live status on the host first — a down service or an invalid
+(`codex exec` refuses to run outside a git repository unless given
+`--skip-git-repo-check`, so run it from the clone.)
+
+If either fails, check `curl "${API%/api/v1}/readyz"` and that
+Credential's live status on the host first (see also step 8) — a down service or an invalid
 Credential fails every harness identically, and shouldn't be mistaken for a
 VM-side problem.
 
@@ -529,15 +547,23 @@ VM-side problem.
 Skip this subsection if step 2 established the VM needs no GitHub access.
 
 Same simplification as the harnesses: no `HTTPS_PROXY`, no wrapper script,
-no per-host git `.proxy` config — DNAT already intercepts `github.com`/
+no per-host git `.proxy` config — the gateway already routes `github.com`/
 `api.github.com` transparently once the Rules above exist. git only needs
 the placeholder credential helper so `git push` doesn't hang prompting
 interactively (CA trust is already installed above):
 
 ```bash
-multipass exec <vm-name> -- bash -c "
+"$JETTY" vm exec <vm-name> -- bash -c "
   git config --global credential.https://github.com.helper '!f() { echo username=x-access-token; echo password=placeholder; }; f'
 "
+```
+
+Commits also need an identity. Ask the user which one to use; the host's
+own is a sensible default:
+
+```bash
+"$JETTY" vm exec <vm-name> -- git config --global user.name "$(git config --global user.name)"
+"$JETTY" vm exec <vm-name> -- git config --global user.email "$(git config --global user.email)"
 ```
 
 Install `gh` as `gh-rest.py` — a REST-only reimplementation of the `gh`
@@ -550,24 +576,22 @@ queries wouldn't meaningfully restrict anything). Rather than keep
 documenting one-off REST workarounds per GraphQL-backed subcommand, this
 installs a `gh` that only ever speaks REST in the first place, so ordinary
 usage (`gh pr create`, `gh issue list`, `gh run watch`, `gh api ...`) just
-works unmodified. It needs `python3` (already installed for node-gyp in step
-4) and `jq` (`--jq` filtering shells out to it rather than reimplementing
-jq's expression language):
+works unmodified. It needs `python3` and `jq` (`--jq` filtering shells out to it rather than
+reimplementing jq's expression language), both installed in step 4.
 
 ```bash
-multipass exec <vm-name> -- sudo apt-get install -y -qq jq
 ```
 
-Its complete source lives in this Jetty release at `gh-rest/gh-rest.py` —
-read it from the installed release directory rather than a checkout's `main`
-branch, and transfer it the same base64-piped way as the CA cert above
-(sidesteps the same `multipass transfer` snap-confinement permission error):
+`jq` was already installed in step 4.
+
+Its complete source lives in the installed release at `gh-rest/gh-rest.py` —
+read it from there rather than a checkout's `main` branch, and pipe it in
+over stdin:
 
 ```bash
-JETTY_RELEASE_DIR="$HOME/.local/share/jetty/releases/v1.0.0"  # match step 3's version
-B64=$(base64 -w0 "$JETTY_RELEASE_DIR/gh-rest/gh-rest.py")
-multipass exec <vm-name> -- bash -c "echo '$B64' | base64 -d | sudo tee /usr/local/bin/gh > /dev/null && sudo chmod 0755 /usr/local/bin/gh"
-multipass exec <vm-name> -- gh --help
+"$JETTY" vm upload <vm-name> /usr/local/bin/gh --owner root --mode 0755 \
+  --file "$JETTY_TOOLS_DIR/gh-rest.py"
+"$JETTY" vm exec <vm-name> -- gh --help
 ```
 
 `gh run watch <run-id>` (accepting `--exit-status`, `-i <seconds>`, and
@@ -591,7 +615,7 @@ common case (`gh api repos/<org>/<repo>/...`) always sends *some*
 `gh`, not npm/curl/other tools in the VM:
 
 ```bash
-multipass exec <vm-name> -- bash -c "
+"$JETTY" vm exec <vm-name> -- bash -c "
   sudo sed -i '/^GH_TOKEN=/d' /etc/environment
   printf 'GH_TOKEN=placeholder\n' | sudo tee -a /etc/environment >/dev/null
   printf 'export GH_TOKEN=placeholder\n' | sudo tee /etc/profile.d/orca-proxy-gh.sh >/dev/null
@@ -606,11 +630,13 @@ real anonymous-request response, not a block signature:
 
 ```bash
 # allowed — expect a real (possibly empty) JSON response, credential injected:
-multipass exec <vm-name> -- bash -lc 'gh api repos/<org>/<repo>/issues'
+"$JETTY" vm exec <vm-name> -- bash -lc 'gh api repos/<org>/<repo>/issues'
 # unmatched path — expect GitHub's own real anonymous-request response (e.g. 401), NOT a proxy block:
-multipass exec <vm-name> -- bash -lc 'gh api user'
+"$JETTY" vm exec <vm-name> -- bash -lc 'gh api user'
 # git through the Rule (works for any repo it covers):
-multipass exec <vm-name> -- bash -lc 'git ls-remote <repo-url>'
+"$JETTY" vm exec <vm-name> -- bash -lc 'git ls-remote <repo-url>'
+# push access, if requested — authenticates without pushing anything:
+"$JETTY" vm exec <vm-name> -- bash -lc 'cd ~/<reponame> && git push --dry-run origin HEAD:refs/heads/jetty-push-check'
 ```
 
 `gh auth status` inside the VM doesn't query GitHub at all — it never could
@@ -623,12 +649,12 @@ sent. Don't try to make it report a real logged-in identity; that would
 mean a real token had reached the VM.
 
 Confirm unrelated traffic is still unaffected — this check matters more now
-than it used to, since DNAT forces *all* of the VM's 80/443 through
+than it used to, since the gateway forces *all* of the VM's 80/443 through
 orca-proxy, not just the tools explicitly wired to a proxy:
 
 ```bash
-multipass exec <vm-name> -- bash -lc 'npm view left-pad version'  # resolves normally via default-Allow passthrough
-multipass exec <vm-name> -- bash -lc 'git ls-remote https://gitlab.com/gitlab-org/gitlab-foss.git HEAD'  # non-GitHub remote, unaffected
+"$JETTY" vm exec <vm-name> -- bash -lc 'npm view left-pad version'  # resolves normally via default-Allow passthrough
+"$JETTY" vm exec <vm-name> -- bash -lc 'git ls-remote https://gitlab.com/gitlab-org/gitlab-foss.git HEAD'  # non-GitHub remote, unaffected
 ```
 
 Finally, verify the *agent* — not just a manual shell command — can actually
@@ -636,7 +662,7 @@ drive `gh` through this chain, since that's the thing that matters. Run it
 non-interactively inside the VM with `-p`:
 
 ```bash
-multipass exec <vm-name> -- bash -lc \
+"$JETTY" vm exec <vm-name> -- bash -lc \
   'cd ~/<reponame> && claude -p "Run: gh api repos/<org>/<repo>/issues --jq \". | length\" and tell me the number." --output-format text'
 ```
 
@@ -657,10 +683,17 @@ Give the user these concrete, copy-pasteable steps (fill in the real values
 you just set up):
 
 1. Open Orca → **Settings → SSH**.
-2. Add a new host with:
-   - **Host/IP**: `<vm-ip>`
-   - **User**: `ubuntu` (or the confirmed user)
+2. Add a new host. Do **not** use the gateway's `10.201.0.2` plus a forwarded
+   port: every VM shares that address, and Orca refuses a second one as "That
+   SSH host is already in Orca". Use the VM's own address and the gateway as a
+   jump host instead (Orca's **Jump Host** field is `ssh -J`):
+   - **Host/IP**: the VM's address (`"$JETTY" vm ip <vm-name>`, e.g. `10.202.0.12`)
+   - **Port**: `22`
+   - **User**: `ubuntu`
    - **Identity file**: `~/.ssh/id_ed25519` (or whichever key was authorized)
+   - **Jump Host**: `ubuntu@10.201.0.2` (the gateway)
+   - **Proxy Command**: leave empty. If a build without the Jump Host field is
+     in use, `ssh -W %h:%p ubuntu@10.201.0.2` is the equivalent.
    - **Name**: `<vm-name>` (so it's recognizable in the "Run on" picker)
 3. Verify the connection in Orca's SSH settings (it should confirm git is
    available on the host).
@@ -678,10 +711,56 @@ you just set up):
    unexpected result mid-task.
 
 Remind the user that agents and `git worktree` will now execute on the VM,
-while Orca's editor/diff/UI stay local; that stopping/deleting the Multipass
-VM (`multipass stop|delete <vm-name>`) will break the SSH target until it's
-recreated; and that orca-proxy is now a **shared, hard dependency** for
-every project VM registered with it, not just this one — if
-`orca-proxy.service` is down, every registered VM loses outbound 80/443
-connectivity entirely (fail-closed, per its firewall design), not just
-credentialed calls.
+while Orca's editor/diff/UI stay local; that stopping/deleting the VM
+(`jetty vm stop|delete <vm-name>`) will break the SSH target until it's
+recreated; and that orca-proxy and the `jetty-gw` gateway VM are now
+**shared, hard dependencies** for every Jetty VM, not just this one — if
+either is down, every Jetty VM loses outbound 80/443 connectivity entirely
+(fail-closed), not just credentialed calls.
+
+## 8. Troubleshooting
+
+Check these before changing anything. Set the `JETTY`, `API` and
+`JETTY_TOOLS_DIR` variables from step 3a first.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| A harness gets `401` once, then works | A host-side refresh revoked the cached token (see 3c); orca-proxy refetched it. Nothing to do. |
+| A harness keeps getting `401` | The host login itself is broken. Check `curl "$API/credentials/<name>"`; if `error`, the user logs in again on the host. |
+| The proxy is waiting for its network | Run `"$JETTY" gateway setup`, then wait for `/readyz` to become ready. |
+| `ssh <vm-name>` says "host key verification failed" | The VM was re-launched under the same name. `ssh-keygen -R <vm-name>`, then accept the new key. |
+| `ssh <vm-name>` times out | `"$JETTY" status`; the gateway must be running with `jetty-gateway.service` active. `"$JETTY" gateway setup` reapplies its config. |
+| The VM has no web access at all | Fail-closed by design when the proxy, the tunnel or the gateway is down. Check `/readyz`, then `"$JETTY" status`. |
+| The VM can't reach a LAN, VPN or host address | By design: Jetty VMs can't reach private addresses, IPv6 or other Jetty VMs. |
+| Orca says "That SSH host is already in Orca" | It keys hosts on address, and every VM shares the gateway's `10.201.0.2`. Add the VM by its own address with the gateway as Jump Host (step 7). |
+| Orca says "System SSH probe failed ... Host key verification failed" | The VM's key isn't trusted under its IP. Add it with `ssh-keyscan` as in step 5. |
+| `gh api user` returns 401 | Expected: no Rule covers `/user`. |
+| A request from the VM is refused with no rule match | Its source isn't registered. `curl "$API/vms"` should list the VM with the address `"$JETTY" vm ip <vm-name>` prints. |
+
+The host may have `br_netfilter` loaded (Docker loads it), which makes the
+host's own netfilter rules see traffic crossing the Jetty bridges. The
+gateway already compensates for the case that broke SSH; keep it in mind if
+some new path through the gateway mysteriously loses its replies.
+
+### Removing a VM, or everything
+
+```bash
+# Its Rules first, or the proxy refuses to unregister a VM they reference:
+curl -fsS "$API/rules" | jq -r --arg vm <vm-name> '.rules[] | select(.vm_selector.vms // [] | index($vm)) | .name'
+curl -fsS -X DELETE "$API/rules/<rule-name>"   # for each name printed
+"$JETTY" vm delete <vm-name>                          # deletes the VM and unregisters it
+```
+
+Then remove its entry from `~/.ssh/jetty_config` (or regenerate the file
+with `"$JETTY" ssh-config`) and `ssh-keygen -R <vm-name>`.
+
+To remove the whole LXD mode (only with the user's explicit OK — it stops
+every Jetty VM):
+
+Jetty does not currently provide a whole-project teardown command. Do not run
+raw `lxc` commands from the skill. Hand this cleanup to the user to perform
+with their LXD management tool, then disable the daemon with:
+
+```bash
+systemctl --user disable --now jetty-daemon.service
+```

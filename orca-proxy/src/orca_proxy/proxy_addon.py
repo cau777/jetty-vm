@@ -2,25 +2,26 @@
 credential injection (design tickets #3/#4/#5), wired to the rule engine,
 Credential execution/caching, and request logging built in earlier slices.
 
-Run via `mitmdump -s proxy_addon.py` in transparent mode (`--mode transparent`)
-behind the host DNAT rule from ticket #12 — this module never talks TCP/TLS
-itself, mitmproxy's own transparent-mode layer (SO_ORIGINAL_DST recovery)
-does that. This addon only makes policy decisions and does the SQLite/exec
-work around them.
+Run via `mitmdump --mode wireguard:<keys>@<host>:<port> -s proxy_addon.py`.
+Agent VMs reach this process only through the Jetty gateway VM, which sends
+their TCP 80/443 down that WireGuard tunnel without rewriting source
+addresses (deploy/jetty-lxd, deploy/gateway/). mitmproxy's WireGuard mode
+hands each stream to its transparent layer with the VM's own source address
+as the peer and the original destination as the server address, so this
+addon never talks TCP/TLS itself; it only makes policy decisions and does
+the SQLite/exec work around them.
 
-Also starts the Management API (app.create_app()) on mitmdump's own asyncio
-loop via the running()/done() addon hooks, satisfying #4's "same process"
-decision — `mitmdump -s proxy_addon.py` is the entire deployed service, one
-process, no separate aiohttp process to run or supervise. The embedded
-aiohttp app opens its own state.sqlite/requests.sqlite connections separate
-from this addon's own (below) — a small, deliberate duplication rather than
-threading one set of connections through two independently-hookable
-lifecycles; SQLite's WAL mode makes concurrent connections to the same file
-safe, so nothing correctness-sensitive depends on avoiding it.
+The source-installed compatibility entry point still starts the Management
+API from mitmproxy's running()/done() hooks. The desktop daemon instead runs
+that API unconditionally and supervises the proxy listener separately, so its
+UI remains available before the WireGuard network exists. Both lifecycles open
+their own state.sqlite/requests.sqlite connections; SQLite's WAL mode makes
+concurrent connections to the same files safe.
 """
 
 import base64
 import time
+from collections.abc import Callable
 from urllib.parse import parse_qsl, urlparse
 
 from aiohttp import web
@@ -31,9 +32,9 @@ from mitmproxy import http, tls
 # package context for relative imports. This resolves correctly as long as
 # mitmdump runs inside the same locked venv orca-proxy is installed into
 # (`uv run mitmdump -s ...`), per #4/#12's deployment model.
-from orca_proxy import config, db, request_log, rule_engine
+from orca_proxy import config, db, request_log, rule_engine, tunnel
 from orca_proxy.app import create_app
-from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError
+from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError, digest
 from orca_proxy.redaction import redact_headers
 from orca_proxy.repo import credentials as credentials_repo
 from orca_proxy.repo import rules as rules_repo
@@ -43,9 +44,21 @@ ECH_EXTENSION_TYPE = 0xFE0D  # RFC 9849 §6.2 / IANA-assigned codepoint 65037, p
 
 BLOCK_MESSAGE = b"blocked by orca-proxy policy"
 
+# Connection outcome for a source address no registered VM owns. Every agent
+# on the private network can reach the tunnel, so an unregistered one must
+# not fall through to wildcard rules (and their credentials) as "".
+BLOCK_UNKNOWN_VM = "block_unknown_vm"
+PLAINTEXT_CREDENTIAL_MESSAGE = b"blocked by orca-proxy: credential rules only apply over TLS"
+
 
 class OrcaProxyAddon:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        start_management_api: bool = True,
+        credential_cache: CredentialCache | None = None,
+        state_callback: Callable[[str], None] | None = None,
+    ) -> None:
         # Deliberately no I/O here — mitmproxy constructs `addons = [...]`
         # at *import* time, which would otherwise open real database
         # connections (against the default ~/.orca-proxy!) on a bare
@@ -55,10 +68,16 @@ class OrcaProxyAddon:
         self._state_conn = None
         self._requests_conn = None
         self._log = None
-        self._credentials = CredentialCache()
+        self._credentials = credential_cache or CredentialCache()
         self._api_runner: web.AppRunner | None = None
+        self._start_management_api = start_management_api
+        self._state_callback = state_callback
 
     def load(self, loader) -> None:
+        # Before mitmproxy starts its WireGuard listener (running()): owner-only
+        # keys, and never log the client private key mitmproxy prints.
+        tunnel.install_log_filter()
+        tunnel.ensure_keys(config.tunnel_keys_path())
         self._state_conn = db.connect(config.db_path())
         # Idempotent — safe whether or not the aiohttp process already
         # migrated this database (mitmdump and the Management API are
@@ -68,16 +87,21 @@ class OrcaProxyAddon:
         self._log = request_log.RequestLog(self._requests_conn)
 
     async def running(self) -> None:
-        # Fires once mitmproxy's own proxy server is up — this is where the
-        # embedded Management API starts, on the same already-running loop.
-        self._api_runner = web.AppRunner(create_app(credential_cache=self._credentials))
-        await self._api_runner.setup()
-        site = web.TCPSite(self._api_runner, "127.0.0.1", config.management_api_port())
-        await site.start()
+        # The compatibility mode starts its API after mitmproxy is ready. The
+        # desktop daemon hosts the API independently before the listener.
+        if self._start_management_api:
+            self._api_runner = web.AppRunner(create_app(credential_cache=self._credentials))
+            await self._api_runner.setup()
+            site = web.TCPSite(self._api_runner, "127.0.0.1", config.management_api_port())
+            await site.start()
+        if self._state_callback:
+            self._state_callback("running")
 
     async def done(self) -> None:
         if self._api_runner is not None:
             await self._api_runner.cleanup()
+        if self._state_callback:
+            self._state_callback("stopped")
 
     # --- shared lookups (fresh-read each time — simplest correct v1
     # behavior; the DB is local SQLite, so this isn't the bottleneck it
@@ -113,6 +137,13 @@ class OrcaProxyAddon:
         vm_ip = client.peername[0] if client.peername else None
         vm_name = self._vm_name_for_ip(vm_ip)
 
+        if vm_name is None:
+            # client_connected() already refused this source; never let it
+            # reach rule evaluation as "" (which wildcard selectors match).
+            data.ignore_connection = False
+            client.error = "blocked by orca-proxy: source is not a registered VM"
+            return
+
         rules = self._rules()
         # No-SNI collapses matching to a value no hostname Rule can ever
         # equal, per the ECH/missing-SNI survey (research/ech-missing-sni-containment.md)
@@ -127,7 +158,7 @@ class OrcaProxyAddon:
 
         connection_id = self._log.log_connection(
             started_at=db.now_iso(),
-            vm_name=vm_name or vm_ip or "unknown",
+            vm_name=vm_name,
             destination_ip=destination_ip,
             destination_port=destination_port,
             destination_hostname=sni,
@@ -166,6 +197,34 @@ class OrcaProxyAddon:
         # zero CA trust required (research/transparent-mitm-passthrough.md).
         data.ignore_connection = True
 
+    def client_connected(self, client) -> None:
+        # The only hook where client.error kills the connection outright (in
+        # tls_clienthello it is ignored and the flow goes on to MITM). Every
+        # agent can reach the tunnel, so a source no registered VM owns is
+        # refused here, before TLS or HTTP of any kind, and logged.
+        vm_ip = client.peername[0] if client.peername else None
+        vm_name = self._vm_name_for_ip(vm_ip)
+        client.orca_vm_name = vm_name
+        if vm_name is not None:
+            return
+        destination_ip, destination_port = client.sockname if client.sockname else ("0.0.0.0", 0)
+        client.orca_connection_id = self._log.log_connection(
+            started_at=db.now_iso(),
+            vm_name=vm_ip or "unknown",
+            destination_ip=destination_ip,
+            destination_port=destination_port,
+            destination_hostname=None,
+            sni_present=False,
+            ech_present=False,
+            duration_ms=None,
+            intercepted=False,
+            outcome=BLOCK_UNKNOWN_VM,
+            matched_rule=None,
+            intercepted_by_rule=None,
+        )
+        client.orca_connect_started = time.monotonic()
+        client.error = "blocked by orca-proxy: source is not a registered VM"
+
     def client_disconnected(self, client) -> None:
         connection_id = getattr(client, "orca_connection_id", None)
         started = getattr(client, "orca_connect_started", None)
@@ -179,7 +238,13 @@ class OrcaProxyAddon:
 
     async def request(self, flow: http.HTTPFlow) -> None:
         client = flow.client_conn
-        vm_name = getattr(client, "orca_vm_name", None) or ""
+        vm_name = getattr(client, "orca_vm_name", None)
+        if vm_name is None:
+            # Unregistered source (client_connected() normally refuses it).
+            flow.kill()
+            return
+        # Plain HTTP never passes tls_clienthello, so it has no connection row.
+        plaintext = getattr(client, "orca_connection_id", None) is None
         # Use the SNI that authorized interception at tls_clienthello time,
         # not flow.request.pretty_host (the client-supplied Host header) —
         # the latter is attacker-controlled and can diverge from the SNI on
@@ -207,6 +272,13 @@ class OrcaProxyAddon:
             flow.metadata["orca_logged"] = True
             return
 
+        if decision.outcome == rule_engine.ALLOW_CREDENTIAL and plaintext:
+            # The Host header is the only hostname on plain HTTP and the guest
+            # chooses it, along with the destination IP: injecting here would
+            # send the credential wherever the guest likes, in cleartext.
+            flow.response = http.Response.make(403, PLAINTEXT_CREDENTIAL_MESSAGE, {"Content-Type": "text/plain"})
+            return
+
         if decision.outcome == rule_engine.ALLOW_CREDENTIAL:
             credential_row = credentials_repo.get(self._state_conn, decision.credential)
             try:
@@ -232,6 +304,7 @@ class OrcaProxyAddon:
                 flow.request.headers[header_name] = f"Basic {basic}"
             flow.metadata["orca_injected_header"] = header_name
             flow.metadata["orca_credential_name"] = decision.credential
+            flow.metadata["orca_credential_digest"] = digest(value)
 
         # allow_default / allow_rule / successfully-injected allow_credential:
         # forward to the real upstream; response() logs once status is known.
@@ -240,6 +313,11 @@ class OrcaProxyAddon:
         if flow.metadata.get("orca_logged"):
             return
         status = flow.response.status_code if flow.response else None
+        credential_name = flow.metadata.get("orca_credential_name")
+        if status == 401 and credential_name:
+            # The next request re-runs the Credential command instead of
+            # replaying a token upstream has revoked until its TTL runs out.
+            self._credentials.reject(credential_name, flow.metadata["orca_credential_digest"])
         self._log_request(flow, status=status, status_origin="upstream")
         flow.metadata["orca_logged"] = True
 

@@ -32,6 +32,11 @@ class Conflict(ApiError):
     code = "conflict"
 
 
+class ServiceUnavailable(ApiError):
+    status = 503
+    code = "service_unavailable"
+
+
 class ValidationFailed(ApiError):
     status = 422
     code = "validation_failed"

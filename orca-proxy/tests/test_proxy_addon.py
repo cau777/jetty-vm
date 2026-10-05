@@ -65,6 +65,7 @@ def config_options():
 # --- tls_clienthello ---
 
 def test_unmatched_hostname_passes_through_default_allow(addon):
+    _put_vm(addon)
     data = _client_hello_data(addon, sni="example.com")
     addon.tls_clienthello(data)
     assert data.ignore_connection is True
@@ -119,6 +120,7 @@ def test_allow_with_credential_forces_interception_no_kill_no_ignore(addon):
 
 
 def test_ech_and_no_sni_logged(addon):
+    _put_vm(addon)
     data = _client_hello_data(addon, sni=None, extensions=[(ECH_EXTENSION_TYPE, b"")])
     addon.tls_clienthello(data)
     row = addon._log.get_connection(data.context.client.orca_connection_id)
@@ -129,6 +131,7 @@ def test_ech_and_no_sni_logged(addon):
 
 
 def test_destination_recovered_from_context_server_address(addon):
+    _put_vm(addon)
     data = _client_hello_data(addon, sni="example.com", dest=("93.184.216.34", 443))
     addon.tls_clienthello(data)
     row = addon._log.get_connection(data.context.client.orca_connection_id)
@@ -136,11 +139,35 @@ def test_destination_recovered_from_context_server_address(addon):
     assert row["destination_port"] == 443
 
 
-def test_unregistered_vm_ip_still_logged_defensively(addon):
+def test_unregistered_source_is_refused_at_connect_and_logged(addon):
+    client = tflow.tclient_conn()
+    client.peername = ("192.0.2.1", 51234)
+    client.sockname = ("93.184.215.14", 443)
+    addon.client_connected(client)
+    assert client.error
+    row = addon._log.get_connection(client.orca_connection_id)
+    assert row["vm_name"] == "192.0.2.1"
+    assert row["destination_ip"] == "93.184.215.14"
+    assert row["outcome"] == "block_unknown_vm"
+
+
+def test_registered_source_is_accepted_at_connect(addon):
+    _put_vm(addon)
+    client = tflow.tclient_conn()
+    client.peername = ("10.14.105.22", 51234)
+    addon.client_connected(client)
+    assert client.error is None
+    assert client.orca_vm_name == "skills-dev"
+
+
+def test_unregistered_source_never_reaches_wildcard_rules_at_tls(addon):
+    _put_credential(addon)
+    _put_rule(addon, "wild", 10, "example.com",
+              {"type": "allow_with_credential", "credential": "gh", "path_prefix": "/", "injection": {"type": "bearer"}})
     data = _client_hello_data(addon, sni="example.com", client_ip="192.0.2.1")
     addon.tls_clienthello(data)
-    row = addon._log.get_connection(data.context.client.orca_connection_id)
-    assert row["vm_name"] == "192.0.2.1"
+    assert data.context.client.error
+    assert getattr(data.context.client, "orca_connection_id", None) is None
 
 
 # --- request/response ---
@@ -304,6 +331,7 @@ def test_response_does_not_double_log_when_already_logged(addon):
 
 
 def test_client_disconnected_records_duration(addon):
+    _put_vm(addon)
     data = _client_hello_data(addon, sni="example.com")
     addon.tls_clienthello(data)
     connection_id = data.context.client.orca_connection_id
@@ -313,6 +341,38 @@ def test_client_disconnected_records_duration(addon):
     row = addon._log.get_connection(connection_id)
     assert row["duration_ms"] is not None
     assert row["duration_ms"] >= 0
+
+
+def _plaintext_flow(addon, client_ip="10.14.105.22", host="api.github.com", path="/repos/cau777/issues"):
+    client = tflow.tclient_conn()
+    client.peername = (client_ip, 51234)
+    addon.client_connected(client)
+    return _flow_for(addon, client, path=path, host=host)
+
+
+async def test_plaintext_from_unregistered_source_is_killed(addon):
+    flow = _plaintext_flow(addon, client_ip="192.0.2.1")
+    await addon.request(flow)
+    assert flow.error is not None
+    assert "Authorization" not in flow.request.headers
+
+
+async def test_plaintext_never_gets_a_credential(addon):
+    _put_vm(addon)
+    _put_credential(addon, command="echo secret-token")
+    _put_rule(addon, "gh", 10, "api.github.com",
+              {"type": "allow_with_credential", "credential": "gh", "path_prefix": "/", "injection": {"type": "bearer"}})
+    flow = _plaintext_flow(addon)
+    await addon.request(flow)
+    assert flow.response.status_code == 403
+    assert "secret-token" not in str(flow.request.headers)
+
+
+async def test_plaintext_from_registered_vm_passes_unmatched(addon):
+    _put_vm(addon)
+    flow = _plaintext_flow(addon, host="example.com", path="/")
+    await addon.request(flow)
+    assert flow.response is None
 
 
 async def test_running_embeds_the_management_api_on_the_same_loop(tmp_path, monkeypatch, unused_tcp_port):
@@ -366,3 +426,23 @@ async def test_headers_redacted_in_logged_request(addon):
     assert headers["Cookie"]["value"] == "[REDACTED]"
     assert "secret-value" not in str(row)
     assert headers["Authorization"]["value"] == "[REDACTED · injected by gh]"
+
+
+async def test_upstream_401_drops_the_cached_credential(addon, tmp_path):
+    counter = tmp_path / "n"
+    _put_vm(addon)
+    _put_credential(addon, command=f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; echo token-$n")
+    _put_rule(addon, "gh", 10, "api.github.com",
+              {"type": "allow_with_credential", "credential": "gh", "path_prefix": "/", "injection": {"type": "bearer"}})
+    data = _client_hello_data(addon, sni="api.github.com")
+    addon.tls_clienthello(data)
+
+    first = _flow_for(addon, data.context.client)
+    await addon.request(first)
+    assert first.request.headers["Authorization"] == "Bearer token-1"
+    first.response = tflow.tresp(status_code=401)
+    addon.response(first)
+
+    second = _flow_for(addon, data.context.client)
+    await addon.request(second)
+    assert second.request.headers["Authorization"] == "Bearer token-2"

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError
+from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError, digest
 
 
 async def test_successful_execution_returns_trimmed_output():
@@ -189,3 +189,19 @@ async def test_drop_removes_state_entirely():
         "last_failure_at": None,
         "failure_category": None,
     }
+
+
+async def test_reject_forgets_the_rejected_value_so_next_call_refreshes(tmp_path):
+    counter = tmp_path / "n"
+    command = f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; echo token-$n"
+    cache = CredentialCache()
+    first = await cache.get_value("c", command, ttl_seconds=3600)
+    assert cache.reject("c", digest(first))
+    assert await cache.get_value("c", command, ttl_seconds=3600) == "token-2"
+
+
+async def test_reject_ignores_a_stale_digest():
+    cache = CredentialCache()
+    await cache.get_value("c", "echo new", ttl_seconds=3600)
+    assert not cache.reject("c", digest("old"))
+    assert cache.get_status("c")["status"] == "valid"

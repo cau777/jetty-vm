@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# Jetty VM lifecycle on LXD: the Jetty network, its gateway VM, and agent VMs.
+#
+#   agent VMs (one NIC on $PRIV_NET: no host address, MAC/IP filtered, port-isolated)
+#        -> gateway VM $GW ($PRIV_NET + $UP_NET)
+#             tcp/80,443 to public IPs -> WireGuard -> host orca-proxy (mitmdump wireguard mode)
+#             other                    -> NAT out the uplink
+#
+# Runs as the host user, who needs LXD access (the `lxd` group). It never uses
+# sudo or touches host firewall rules: LXD's daemon owns the bridges and their
+# NAT, and all policy netfilter lives inside the gateway VM.
+#
+# Usage:
+#   jetty-lxd setup                       network + gateway (idempotent; re-run to repair)
+#   jetty-lxd launch NAME [--cpus N] [--memory 8GiB] [--disk 40GiB] [--image ubuntu:24.04] [--ssh-key PATH.pub]
+#   jetty-lxd delete NAME
+#   jetty-lxd start|stop|restart NAME
+#   jetty-lxd exec NAME -- CMD...         run as the VM's `ubuntu` user (login shell env)
+#   jetty-lxd ip NAME
+#   jetty-lxd ssh-config [NAME...]        ~/.ssh/config entries (one hop: a gateway port per VM)
+#   jetty-lxd list
+#   jetty-lxd status
+set -euo pipefail
+
+# Settings from Jetty's install.sh (proxy data dir, API port, service, venv),
+# unless the caller already set them (e.g. a test proxy).
+JETTY_ENV=${JETTY_HOME:-$HOME/.local/share/jetty}/jetty.env
+# shellcheck source=/dev/null
+[ -n "${ORCA_PROXY_HOME:-}" ] || [ ! -f "$JETTY_ENV" ] || . "$JETTY_ENV"
+
+PROJECT=${JETTY_LXD_PROJECT:-jetty}
+UP_NET=jettyup0
+UP_ADDR=10.201.0.1
+PRIV_NET=jettypriv0
+PRIV_PREFIX=10.202.0
+GW=jetty-gw
+GW_PRIV_IP=$PRIV_PREFIX.1
+GW_UP_IP=${UP_ADDR%.*}.2    # static, so SSH config survives reboots
+SSH_PORT_BASE=2200          # host SSH to agent .N is gateway port 2200+N
+TUNNEL_PORT=51820   # must match deploy/orca-proxy.service
+GW_IMAGE=ubuntu:24.04
+API=http://127.0.0.1:${ORCA_PROXY_MANAGEMENT_PORT:-8080}/api/v1
+ORCA_PROXY_PYTHON=${ORCA_PROXY_PYTHON:-$HOME/.local/share/jetty/current/orca-proxy/.venv/bin/python}
+ORCA_PROXY_SERVICE=${ORCA_PROXY_SERVICE:-orca-proxy.service}
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+
+LXC=(lxc --project "$PROJECT")
+die() { echo "jetty-lxd: $*" >&2; exit 1; }
+lx() { "${LXC[@]}" "$@"; }
+exists() { lx info "$1" >/dev/null 2>&1; }
+
+wait_agent() {
+  for _ in $(seq 150); do lx exec "$1" -- true 2>/dev/null && return; sleep 2; done
+  die "$1: the LXD agent never came up"
+}
+
+# LXD 5.21 sometimes refuses `start` right after `stop`; retry briefly.
+start_vm() {
+  for _ in $(seq 30); do
+    [ "$(lx list "^$1\$" -f csv -c s)" = RUNNING ] && return
+    lx start "$1" 2>/dev/null && return
+    sleep 2
+  done
+  lx start "$1"
+}
+
+ssh_pubkey() {
+  local key=${1:-}
+  if [ -z "$key" ]; then
+    for k in ~/.ssh/id_ed25519.pub ~/.ssh/id_ecdsa.pub ~/.ssh/id_rsa.pub; do [ -f "$k" ] && key=$k && break; done
+  fi
+  [ -n "$key" ] && [ -f "$key" ] || die "no SSH public key found; pass --ssh-key PATH.pub"
+  cat "$key"
+}
+
+userdata() { printf '#cloud-config\nssh_authorized_keys:\n  - %s\n%s\n' "$1" "${2:-}"; }
+
+ssh_port() { echo $((SSH_PORT_BASE + ${1##*.})); }
+
+agent_ip() { lx config device get "$1" eth0 ipv4.address 2>/dev/null; }
+
+agents() { lx list -f csv -c n | grep -vx "$GW" || true; }
+
+next_ip() {
+  local used i
+  used=$(for vm in $(agents); do agent_ip "$vm"; done)
+  for i in $(seq 11 250); do
+    grep -qx "$PRIV_PREFIX.$i" <<<"$used" || { echo "$PRIV_PREFIX.$i"; return; }
+  done
+  die "no free agent addresses left in $PRIV_PREFIX.0/24"
+}
+
+cmd_setup() {
+  # lxc's create commands read YAML from any non-terminal stdin and block on it.
+  exec </dev/null
+  command -v lxc >/dev/null || die "LXD is not installed (snap install lxd && lxd init --auto)"
+  [ -x "$ORCA_PROXY_PYTHON" ] || die "orca-proxy is not installed ($ORCA_PROXY_PYTHON missing); run Jetty's install.sh first"
+
+  lxc project show "$PROJECT" >/dev/null 2>&1 || lxc project create "$PROJECT" -c features.images=false -c features.profiles=true
+  # The project's default profile has a root disk and deliberately no NIC.
+  lx profile device show default | grep -q '^root:' || lx profile device add default root disk pool=default path=/
+  lxc network show "$UP_NET" >/dev/null 2>&1 || lxc network create "$UP_NET" ipv4.address=$UP_ADDR/24 ipv4.nat=true ipv6.address=none
+  # The agent network: the host has no address on it at all.
+  lxc network show "$PRIV_NET" >/dev/null 2>&1 || lxc network create "$PRIV_NET" ipv4.address=none ipv6.address=none
+
+  # The proxy's tunnel listener binds $UP_ADDR, which exists only now; skip
+  # the unit's restart backoff if it is still retrying.
+  systemctl --user is-active --quiet "$ORCA_PROXY_SERVICE" 2>/dev/null || systemctl --user restart "$ORCA_PROXY_SERVICE" 2>/dev/null || true
+
+  if ! exists "$GW"; then
+    lx init "$GW_IMAGE" "$GW" --vm -c limits.cpu=1 -c limits.memory=1GiB -d root,size=8GiB
+    lx config device add "$GW" eth0 nic network="$UP_NET" ipv4.address="$GW_UP_IP"
+    lx config device add "$GW" eth1 nic network="$PRIV_NET"
+    lx config set "$GW" cloud-init.user-data "$(userdata "$(ssh_pubkey "${SSH_KEY:-}")" 'packages: [wireguard-tools, iptables]')"
+  fi
+  # Gateways created before the static uplink address: pin it, then reboot so
+  # DHCP hands it out.
+  if [ "$(lx config device get "$GW" eth0 ipv4.address 2>/dev/null)" != "$GW_UP_IP" ]; then
+    lx config device get "$GW" eth0 network >/dev/null 2>&1 \
+      && lx config device set "$GW" eth0 ipv4.address="$GW_UP_IP" \
+      || lx config device override "$GW" eth0 ipv4.address="$GW_UP_IP"
+    [ "$(lx list "^$GW\$" -f csv -c s)" = RUNNING ] && lx stop "$GW"
+  fi
+  start_vm "$GW"
+  wait_agent "$GW"
+  lx exec "$GW" -- cloud-init status --wait >/dev/null || true
+
+  local material server_pub
+  material=$("$ORCA_PROXY_PYTHON" -m orca_proxy.tunnel gateway)
+  server_pub=$(jq -r .server_public_key <<<"$material")
+  lx exec "$GW" -- install -d -m 700 /etc/jetty-gateway
+  # Private key goes over stdin into a root-only file; never argv, never logs.
+  jq -r .client_key <<<"$material" | lx exec "$GW" -- sh -c 'umask 077; cat > /etc/jetty-gateway/client.key'
+  lx exec "$GW" -- sh -c 'cat > /etc/jetty-gateway/env' <<EOF
+UP_MAC=$(lx config get "$GW" volatile.eth0.hwaddr)
+PRIV_MAC=$(lx config get "$GW" volatile.eth1.hwaddr)
+PRIV_ADDR=$GW_PRIV_IP/24
+SERVER_PUB=$server_pub
+ENDPOINT=$UP_ADDR:$TUNNEL_PORT
+HOST_ADDR=$UP_ADDR
+SSH_PORT_BASE=$SSH_PORT_BASE
+EOF
+  lx exec "$GW" -- sh -c 'cat > /usr/local/sbin/jetty-gateway-up && chmod 755 /usr/local/sbin/jetty-gateway-up' <"$HERE/gateway/jetty-gateway-up"
+  lx exec "$GW" -- sh -c 'cat > /etc/systemd/system/jetty-gateway.service' <"$HERE/gateway/jetty-gateway.service"
+  lx exec "$GW" -- systemctl daemon-reload
+  lx exec "$GW" -- systemctl enable jetty-gateway.service >/dev/null 2>&1
+  lx exec "$GW" -- systemctl restart jetty-gateway.service
+  echo "Jetty gateway ready ($GW, uplink $GW_UP_IP)"
+}
+
+cmd_launch() {
+  local name=${1:-}; shift || true
+  [ -n "$name" ] || die "usage: jetty-lxd launch NAME [--cpus N] [--memory SIZE] [--disk SIZE] [--image IMAGE] [--ssh-key PATH.pub]"
+  local cpus=4 memory=8GiB disk=40GiB image=ubuntu:24.04 key=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --cpus) cpus=$2; shift 2 ;;
+      --memory) memory=$2; shift 2 ;;
+      --disk) disk=$2; shift 2 ;;
+      --image) image=$2; shift 2 ;;
+      --ssh-key) key=$2; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  exists "$GW" || die "run 'jetty-lxd setup' first"
+  exists "$name" && die "$name already exists"
+  curl -fsS "${API%/api/v1}/readyz" >/dev/null || die "orca-proxy is not ready (${API%/api/v1}/readyz)"
+
+  local ip mac
+  ip=$(next_ip)
+  exec </dev/null   # see cmd_setup
+  lx init "$image" "$name" --vm -c limits.cpu="$cpus" -c limits.memory="$memory" -d root,size="$disk"
+  lx config device add "$name" eth0 nic network="$PRIV_NET" ipv4.address="$ip" \
+    security.ipv4_filtering=true security.ipv6_filtering=true security.mac_filtering=true \
+    security.port_isolation=true >/dev/null
+  mac=$(lx config get "$name" volatile.eth0.hwaddr)
+  lx config set "$name" cloud-init.network-config "$(cat <<EOF
+version: 2
+ethernets:
+  lan:
+    match: {macaddress: "$mac"}
+    addresses: [$ip/24]
+    routes: [{to: default, via: $GW_PRIV_IP}]
+    nameservers: {addresses: [1.1.1.1, 9.9.9.9]}
+EOF
+)"
+  lx config set "$name" cloud-init.user-data "$(userdata "$(ssh_pubkey "$key")")"
+
+  # Register before first boot so even cloud-init's own traffic is attributed;
+  # an unregistered source is refused by the proxy.
+  curl -fsS -X PUT "$API/vms/$name" -H 'Content-Type: application/json' -d "{\"ip_address\": \"$ip\"}" >/dev/null
+  start_vm "$name"
+  wait_agent "$name"
+  lx exec "$name" -- cloud-init status --wait >/dev/null || true
+  curl -fsS "$API/ca" | jq -r .certificate_pem |
+    lx exec "$name" -- sh -c 'cat > /usr/local/share/ca-certificates/orca-proxy-ca.crt && update-ca-certificates >/dev/null 2>&1'
+  echo "$name is up at $ip (registered with orca-proxy, CA trusted)"
+}
+
+cmd_delete() {
+  local name=${1:?usage: jetty-lxd delete NAME}
+  [ "$name" != "$GW" ] || die "refusing to delete the gateway"
+  exists "$name" && lx delete --force "$name"
+  local code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/vms/$name" || true)
+  case $code in
+    204|404) echo "$name deleted" ;;
+    409) echo "$name deleted; its orca-proxy registration is still referenced by a Rule — remove that Rule, then DELETE $API/vms/$name" >&2 ;;
+    *) echo "$name deleted; unregistering from orca-proxy failed (HTTP $code)" >&2 ;;
+  esac
+}
+
+cmd_exec() {
+  local name=${1:?usage: jetty-lxd exec NAME -- CMD...}; shift
+  [ "${1:-}" = "--" ] && shift
+  [ $# -gt 0 ] || die "usage: jetty-lxd exec NAME -- CMD..."
+  lx exec "$name" --user 1000 --group 1000 --cwd /home/ubuntu \
+    --env HOME=/home/ubuntu --env USER=ubuntu --env LOGNAME=ubuntu -- "$@"
+}
+
+cmd_ssh_config() {
+  local names
+  if [ $# -gt 0 ]; then names=("$@"); else mapfile -t names < <(agents); fi
+  printf 'Host %s\n  HostName %s\n  User ubuntu\n\n' "$GW" "$GW_UP_IP"
+  # One hop: the gateway forwards port 2200+N to agent .N:22. HostKeyAlias
+  # keeps known_hosts per VM rather than per gateway port.
+  for n in "${names[@]}"; do
+    printf 'Host %s\n  HostName %s\n  Port %s\n  User ubuntu\n  HostKeyAlias %s\n\n' \
+      "$n" "$GW_UP_IP" "$(ssh_port "$(agent_ip "$n")")" "$n"
+  done
+}
+
+cmd_status() {
+  echo "gateway: $(lx list "^$GW\$" -f csv -c s 2>/dev/null || echo missing)"
+  if exists "$GW"; then
+    echo "gateway service: $(lx exec "$GW" -- systemctl is-active jetty-gateway.service 2>/dev/null || true)"
+    local hs
+    hs=$(lx exec "$GW" -- wg show wg0 latest-handshakes 2>/dev/null | awk '{print $2}')
+    if [ -n "$hs" ] && [ "$hs" != 0 ]; then echo "tunnel: last handshake $(( $(date +%s) - hs ))s ago"; else echo "tunnel: no handshake"; fi
+  fi
+  echo "orca-proxy: $(curl -sS "${API%/api/v1}/readyz" 2>/dev/null || echo unreachable)"
+}
+
+sub=${1:-}; shift || true
+case $sub in
+  setup) [ "${1:-}" = --ssh-key ] && SSH_KEY=$2; cmd_setup ;;
+  launch) cmd_launch "$@" ;;
+  delete) cmd_delete "$@" ;;
+  start) start_vm "${1:?NAME}"; wait_agent "$1" ;;
+  stop) lx stop "${1:?NAME}" ;;
+  restart) lx stop "${1:?NAME}"; start_vm "$1"; wait_agent "$1" ;;
+  exec) cmd_exec "$@" ;;
+  ip) agent_ip "${1:?NAME}" ;;
+  ssh-config) cmd_ssh_config "$@" ;;
+  list) for vm in $(agents); do printf '%s\t%s\t%s\n' "$vm" "$(agent_ip "$vm")" "$(lx list "^$vm\$" -f csv -c s)"; done ;;
+  status) cmd_status ;;
+  *) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+esac
