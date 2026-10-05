@@ -355,7 +355,29 @@ after a re-launch means exactly that.
 Both the VM's address and the gateway's are fixed, so these entries survive
 reboots.
 
-Do not proceed to step 6 until `ssh <vm-name> echo ok` succeeds.
+Orca does not read these entries (step 7). It connects to the VM's own address
+(`"$JL" ip <vm-name>`) through the gateway as a jump host, using the system
+`ssh` with no terminal, so the VM's host key must also be trusted **under that
+IP**; the alias above doesn't count, and Orca fails with "Host key
+verification failed" (plus a harmless `ssh_askpass` error). `known_hosts` is
+usually hashed, so add the entry with `ssh-keyscan` rather than editing text.
+Fetch the key through the gateway, and compare its fingerprint with the one
+the VM reports over the verified `ssh <vm-name>` connection before trusting it:
+
+```bash
+VM_IP=$("$JL" ip <vm-name>)
+ssh ubuntu@10.201.0.2 "ssh-keyscan -t ed25519 $VM_IP 2>/dev/null" > "$TMPDIR/hk"
+ssh-keygen -lf "$TMPDIR/hk"
+ssh <vm-name> 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub'   # must match
+cp ~/.ssh/known_hosts ~/.ssh/known_hosts.bak && cat "$TMPDIR/hk" >> ~/.ssh/known_hosts
+ssh -o BatchMode=yes -J ubuntu@10.201.0.2 ubuntu@$VM_IP echo ok
+```
+
+If a VM with the same name was deleted and launched again, its address may be
+reused with a new key; `ssh-keygen -R <vm-ip>` first.
+
+Do not proceed to step 6 until `ssh <vm-name> echo ok` and the jump-host
+command above both succeed.
 
 ## 6. Register the VM with orca-proxy and wire the harness(es), git, and gh
 
@@ -664,11 +686,17 @@ Give the user these concrete, copy-pasteable steps (fill in the real values
 you just set up):
 
 1. Open Orca → **Settings → SSH**.
-2. Add a new host with the values from the step 5 entry:
-   - **Host/IP**: `10.201.0.2`
-   - **Port**: the entry's `Port` (2200 + the VM address's last octet)
+2. Add a new host. Do **not** use the gateway's `10.201.0.2` plus a forwarded
+   port: every VM shares that address, and Orca refuses a second one as "That
+   SSH host is already in Orca". Use the VM's own address and the gateway as a
+   jump host instead (Orca's **Jump Host** field is `ssh -J`):
+   - **Host/IP**: the VM's address (`"$JL" ip <vm-name>`, e.g. `10.202.0.12`)
+   - **Port**: `22`
    - **User**: `ubuntu`
    - **Identity file**: `~/.ssh/id_ed25519` (or whichever key was authorized)
+   - **Jump Host**: `ubuntu@10.201.0.2` (the gateway)
+   - **Proxy Command**: leave empty. If a build without the Jump Host field is
+     in use, `ssh -W %h:%p ubuntu@10.201.0.2` is the equivalent.
    - **Name**: `<vm-name>` (so it's recognizable in the "Run on" picker)
 3. Verify the connection in Orca's SSH settings (it should confirm git is
    available on the host).
@@ -707,6 +735,8 @@ sourced.
 | `ssh <vm-name>` times out | `"$JL" status`; the gateway must be running with `jetty-gateway.service` active. `"$JL" setup` reapplies its config. |
 | The VM has no web access at all | Fail-closed by design when the proxy, the tunnel or the gateway is down. Check `/readyz`, then `"$JL" status`. |
 | The VM can't reach a LAN, VPN or host address | By design: Jetty VMs can't reach private addresses, IPv6 or other Jetty VMs. |
+| Orca says "That SSH host is already in Orca" | It keys hosts on address, and every VM shares the gateway's `10.201.0.2`. Add the VM by its own address with the gateway as Jump Host (step 7). |
+| Orca says "System SSH probe failed ... Host key verification failed" | The VM's key isn't trusted under its IP. Add it with `ssh-keyscan` as in step 5. |
 | `gh api user` returns 401 | Expected: no Rule covers `/user`. |
 | A request from the VM is refused with no rule match | Its source isn't registered. `curl "$API/vms"` should list the VM with the address `"$JL" ip <vm-name>` prints. |
 
