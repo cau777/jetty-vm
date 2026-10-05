@@ -52,6 +52,8 @@ jobs:
           install -m 0755 release/AppRun "$appdir/AppRun"
           install -m 0644 release/Jetty.desktop "$appdir/Jetty.desktop"
           install -m 0644 release/jetty.svg "$appdir/.DirIcon"
+          # appimagetool looks for the desktop file's Icon= name at the AppDir root.
+          install -m 0644 release/jetty.svg "$appdir/jetty.svg"
           install -m 0644 release/jetty.svg "$appdir/usr/share/icons/hicolor/scalable/apps/jetty.svg"
           install -m 0644 release/Jetty.desktop "$appdir/usr/share/applications/jetty.desktop"
           desktop-file-validate "$appdir/Jetty.desktop"
@@ -75,10 +77,9 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
             -o "$RUNNER_TEMP/appimagetool.AppImage"
           chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
-          ARCH=x86_64 "$RUNNER_TEMP/appimagetool.AppImage" "$appdir" \
-            --output "$RUNNER_TEMP/jetty-x86_64.AppImage"
+          ARCH=x86_64 "$RUNNER_TEMP/appimagetool.AppImage" "$appdir" "$RUNNER_TEMP/jetty-x86_64.AppImage"
           chmod +x "$RUNNER_TEMP/jetty-x86_64.AppImage"
-          sha256sum "$RUNNER_TEMP/jetty-x86_64.AppImage" > "$RUNNER_TEMP/jetty-x86_64.AppImage.sha256"
+          (cd "$RUNNER_TEMP" && sha256sum jetty-x86_64.AppImage > jetty-x86_64.AppImage.sha256)
       - name: Publish release assets
         env:
           TAG: ${{ github.ref_name }}
