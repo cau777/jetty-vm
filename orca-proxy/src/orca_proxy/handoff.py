@@ -11,6 +11,7 @@ import hashlib
 import os
 import pwd
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -52,9 +53,12 @@ _TERMINALS = (
     ("x-terminal-emulator", ("-e",)),
 )
 
-# $1 project dir, $2 install flag, $3 skill source, $4 skills agent id, $5... agent command
+# $1 project dir, $2 install flag, $3 skill source, $4 skills agent id, $5 jetty
+# executable, $6... agent command
 _SCRIPT = r"""
 cd "$1" || { echo "Cannot open $1"; read -r _; exit 1; }
+# The skill drives Jetty through $JETTY_CLI; point it at the running app.
+export JETTY_CLI="$5"
 if [ "$2" = 1 ]; then
   echo "Installing the orca-ssh-setup skill for this agent..."
   if ! npx --yes skills add "$3" --global --agent "$4" --copy --yes; then
@@ -62,7 +66,7 @@ if [ "$2" = 1 ]; then
     printf "Press Enter to start the agent anyway..."; read -r _
   fi
 fi
-shift 4
+shift 5
 if ! command -v "$1" >/dev/null 2>&1; then
   echo "$1 is not installed or not on PATH."
   printf "Press Enter to close..."; read -r _
@@ -110,12 +114,27 @@ def skill_current(agent: Agent, skill: Path, home: Path | None = None) -> bool:
     return False
 
 
-def prompt(vm_name: str, ip_address: str) -> str:
+def jetty_executable() -> Path:
+    """The executable of the Jetty app this daemon runs from."""
+    appimage = os.environ.get("APPIMAGE")
+    if appimage:
+        return Path(appimage).resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve()
+    # From source: the `jetty` console script installed beside this interpreter.
+    script = Path(sys.executable).with_name("jetty")
+    if script.is_file():
+        return script
+    found = shutil.which("jetty")
+    return Path(found) if found else Path.home() / ".local/bin/jetty"
+
+
+def prompt(vm_name: str, ip_address: str, jetty: Path) -> str:
     return (
         f"Use the orca-ssh-setup skill to prepare the Jetty VM '{vm_name}' for the project in this "
         f"directory. The Jetty app already created and started it (address {ip_address}, SSH host "
-        f"alias {vm_name}), so do not create a new VM: confirm it with `jetty vm list` and continue "
-        "from there. Start with step 1."
+        f"alias {vm_name}), so do not create a new VM: confirm it with `{shlex.quote(str(jetty))} vm list` "
+        f"and continue from there. Jetty's CLI is {jetty} (also exported as $JETTY_CLI). Start with step 1."
     )
 
 
@@ -157,10 +176,11 @@ def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path) -> 
     skill = _stable_skill_copy()
     install = not skill_current(agent, skill)
     terminal, prefix = _find_terminal()
+    jetty = jetty_executable()
     shell_command = [
         _login_shell(), "-lic", _SCRIPT, "jetty-handoff",
-        str(project_dir), "1" if install else "0", str(skill), agent.skills_id,
-        *agent.command, prompt(vm_name, ip_address),
+        str(project_dir), "1" if install else "0", str(skill), agent.skills_id, str(jetty),
+        *agent.command, prompt(vm_name, ip_address, jetty),
     ]
     command = [terminal, *prefix, *shell_command]
     systemd_run = shutil.which("systemd-run")
@@ -183,4 +203,5 @@ def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path) -> 
         "skill_install": install,
         "terminal": Path(terminal).name,
         "project_dir": str(project_dir),
+        "jetty": str(jetty),
     }

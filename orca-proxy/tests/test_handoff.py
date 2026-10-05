@@ -1,3 +1,4 @@
+import shlex
 import shutil
 import subprocess
 
@@ -29,8 +30,10 @@ async def _register(client, name="proj-vm", ip="10.202.0.21"):
     assert resp.status == 201
 
 
-async def test_handoff_opens_terminal_and_installs_missing_skill(client, launched):
+async def test_handoff_opens_terminal_and_installs_missing_skill(client, launched, monkeypatch):
     home, calls = launched
+    jetty = home / "Jetty Apps/jetty"
+    monkeypatch.setenv("APPIMAGE", str(jetty))
     await _register(client)
     resp = await client.post("/api/v1/jetty/vms/proj-vm/handoff", json={"agent": "claude"})
     body = await resp.json()
@@ -42,8 +45,10 @@ async def test_handoff_opens_terminal_and_installs_missing_skill(client, launche
     assert argv[:3] == ["/usr/bin/ptyxis", "--", "/bin/bash"]
     # project dir, install flag, skill source, skills agent id, agent command, prompt
     assert argv[6:9] == [str(home), "1", str(home / ".local/share/jetty/orca-ssh-setup")]
-    assert argv[9:11] == ["claude-code", "claude"]
-    assert "'proj-vm'" in argv[11] and "10.202.0.21" in argv[11]
+    assert argv[9:12] == ["claude-code", str(jetty), "claude"]
+    assert "'proj-vm'" in argv[12] and "10.202.0.21" in argv[12]
+    assert f"`{shlex.quote(str(jetty))} vm list`" in argv[12]
+    assert body["jetty"] == str(jetty)
     assert (home / ".local/share/jetty/orca-ssh-setup/SKILL.md").is_file()
 
 
@@ -60,7 +65,8 @@ async def test_handoff_skips_install_when_agent_has_current_skill(client, launch
     assert (await resp.json())["skill_install"] is False
     argv = calls[0][0]
     assert argv[6:8] == [str(project), "0"]
-    assert argv[9:12] == ["opencode", "opencode", "--prompt"]
+    assert argv[9] == "opencode"
+    assert argv[11:13] == ["opencode", "--prompt"]
 
 
 async def test_handoff_reinstalls_outdated_skill(client, launched):
@@ -96,18 +102,28 @@ async def test_handoff_unknown_vm_404(client, launched):
 
 
 def test_script_runs_agent_with_prompt_in_project_dir(tmp_path):
-    """Run the terminal script itself, with a stand-in agent that records its cwd and args."""
+    """Run the terminal script itself, with a stand-in agent that records its cwd, JETTY_CLI and args."""
     agent = tmp_path / "fake-agent"
-    agent.write_text('#!/bin/sh\npwd > "$OUT"\nprintf "%s\\n" "$@" >> "$OUT"\n')
+    agent.write_text('#!/bin/sh\npwd > "$OUT"\necho "$JETTY_CLI" >> "$OUT"\nprintf "%s\\n" "$@" >> "$OUT"\n')
     agent.chmod(0o755)
     out = tmp_path / "out.txt"
     project = tmp_path / "project"
     project.mkdir()
     subprocess.run(
-        ["/bin/bash", "-c", handoff._SCRIPT, "jetty-handoff", str(project), "0", "unused", "unused",
+        ["/bin/bash", "-c", handoff._SCRIPT, "jetty-handoff", str(project), "0", "unused", "unused", "/opt/my jetty/jetty",
          str(agent), "--prompt", "set up my VM"],
         check=True,
         env={"OUT": str(out), "PATH": "/usr/bin:/bin"},
         timeout=10,
     )
-    assert out.read_text().splitlines() == [str(project), "--prompt", "set up my VM"]
+    assert out.read_text().splitlines() == [str(project), "/opt/my jetty/jetty", "--prompt", "set up my VM"]
+
+
+def test_jetty_executable_prefers_the_appimage(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPIMAGE", str(tmp_path / "jetty"))
+    assert handoff.jetty_executable() == tmp_path / "jetty"
+
+
+def test_jetty_executable_from_source_uses_the_console_script(monkeypatch):
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    assert handoff.jetty_executable() == handoff.Path(handoff.sys.executable).with_name("jetty")
