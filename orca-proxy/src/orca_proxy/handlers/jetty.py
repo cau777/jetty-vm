@@ -13,6 +13,28 @@ from . import read_json_body, reject_unknown_fields
 
 log = logging.getLogger("jetty.api")
 
+VM_CREATE_STEPS = [
+    ("validate", "Validating VM settings"),
+    ("instance", "Pulling the Ubuntu image and creating the instance"),
+    ("register", "Registering the VM and SSH access"),
+    ("start", "Starting the VM"),
+    ("guest_agent", "Waiting for the LXD guest agent"),
+    ("cloud_init", "Running cloud-init"),
+    ("ready", "Checking the VM is ready"),
+]
+GATEWAY_SETUP_STEPS = [
+    ("validate", "Checking the SSH key"),
+    ("project", "Preparing the LXD project"),
+    ("profile", "Preparing the VM profile"),
+    ("networks", "Preparing the Jetty networks"),
+    ("instance", "Creating the gateway if needed"),
+    ("start", "Starting the gateway"),
+    ("guest_agent", "Waiting for the LXD guest agent"),
+    ("cloud_init", "Running cloud-init"),
+    ("configure", "Installing gateway networking and firewall rules"),
+    ("ssh_config", "Updating host SSH configuration"),
+]
+
 
 def _service(request: web.Request) -> JettyLxd:
     return JettyLxd(request.app["db"])
@@ -38,8 +60,25 @@ async def setup(request: web.Request) -> web.Response:
         from ..errors import ValidationFailed
 
         raise ValidationFailed("ssh_public_key must be a string", fields={"ssh_public_key": "invalid value"})
-    result = await _call(_service(request).setup(ssh_key))
-    return web.json_response(result)
+    if request.app["jobs"].has_active("gateway_setup", "vm_create"):
+        from ..errors import Conflict
+
+        raise Conflict("Another Jetty provisioning job is already in progress")
+    service = _service(request)
+    job = request.app["jobs"].start(
+        "gateway_setup",
+        "jetty-gw",
+        GATEWAY_SETUP_STEPS,
+        lambda progress: _call(service.setup(ssh_key, progress=progress)),
+    )
+    return web.json_response(job, status=202)
+
+
+async def get_job(request: web.Request) -> web.Response:
+    job = request.app["jobs"].get(request.match_info["job_id"])
+    if job is None:
+        raise NotFound(f"Job '{request.match_info['job_id']}' not found")
+    return web.json_response(job)
 
 
 async def list_vms(request: web.Request) -> web.Response:
@@ -52,6 +91,10 @@ async def create_vm(request: web.Request) -> web.Response:
     from ..validation import validate_name
 
     name = validate_name(body.get("name"))
+    if request.app["jobs"].has_active("gateway_setup", "vm_create"):
+        from ..errors import Conflict
+
+        raise Conflict("Another Jetty provisioning job is already in progress")
     kwargs = {key: body[key] for key in ("cpus", "memory", "disk", "image") if key in body}
     if "ssh_public_key" in body:
         if not isinstance(body["ssh_public_key"], str):
@@ -59,8 +102,14 @@ async def create_vm(request: web.Request) -> web.Response:
 
             raise ValidationFailed("ssh_public_key must be a string", fields={"ssh_public_key": "invalid value"})
         kwargs["ssh_key"] = body["ssh_public_key"]
-    result = await _call(_service(request).create_vm(name, **kwargs))
-    return web.json_response(result, status=201)
+    service = _service(request)
+    job = request.app["jobs"].start(
+        "vm_create",
+        name,
+        VM_CREATE_STEPS,
+        lambda progress: _call(service.create_vm(name, **kwargs, progress=progress)),
+    )
+    return web.json_response(job, status=202)
 
 
 async def delete_vm(request: web.Request) -> web.Response:

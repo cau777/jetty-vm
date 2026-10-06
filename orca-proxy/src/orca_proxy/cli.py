@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,6 +50,32 @@ def _api(method: str, path: str, body: dict | None = None) -> dict:
             f"Jetty's daemon is unavailable at {_base_url()}. Start it with `systemctl --user start jetty-daemon.service`."
         ) from exc
     return json.loads(payload) if payload else {}
+
+
+def _wait_for_job(job: dict) -> dict:
+    """Follow an asynchronous Jetty operation so CLI commands remain blocking."""
+    job_id = job.get("job_id")
+    if not isinstance(job_id, str) or not job_id:
+        raise RuntimeError("Jetty returned an invalid operation job")
+    last_step = None
+    while True:
+        state = job.get("state")
+        if state == "done":
+            result = job.get("result")
+            return result if isinstance(result, dict) else {}
+        if state in {"failed", "cancelled"}:
+            error = job.get("error") or {}
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            raise RuntimeError(message or f"Jetty operation {state}")
+        current = job.get("current_step")
+        if current != last_step:
+            labels = {step.get("key"): step.get("label") for step in job.get("steps", [])}
+            label = labels.get(current)
+            if label:
+                print(label, file=sys.stderr)
+            last_step = current
+        time.sleep(0.8)
+        job = _api("GET", f"/api/v1/jetty/jobs/{urllib.parse.quote(job_id, safe='')}")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -134,7 +161,7 @@ def _vm(args) -> int:
         ssh_key = _read_ssh_key(args.ssh_key)
         if ssh_key:
             body["ssh_public_key"] = ssh_key
-        vm = _api("POST", "/api/v1/jetty/vms", body)
+        vm = _wait_for_job(_api("POST", "/api/v1/jetty/vms", body))
         print(f"{vm['name']} is {vm['status']} at {vm['ip_address']}")
         return 0
     if args.vm_mode == "list":
@@ -272,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             key = _read_ssh_key(args.ssh_key)
             if key:
                 body["ssh_public_key"] = key
-            result = _api("POST", "/api/v1/jetty/setup", body)
+            result = _wait_for_job(_api("POST", "/api/v1/jetty/setup", body))
             print(f"Gateway {result.get('gateway')} is {result.get('state')}.")
             return 0
         if args.mode == "vm":

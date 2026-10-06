@@ -160,7 +160,7 @@ fi
 chmod +x "$RELEASE_DIR/gh-rest/gh-rest.py" "$RELEASE_DIR/orca-proxy/deploy/jetty-lxd"
 install -D -m 0755 "$RELEASE_DIR/gh-rest/gh-rest.py" "$JETTY_HOME/gh-rest.py"
 install -D -m 0644 \
-  "$RELEASE_DIR/orca-proxy/src/orca_proxy/static/quick-add-catalog.json" \
+  "$RELEASE_DIR/orca-proxy/src/orca_proxy/resources/quick-add-catalog.json" \
   "$JETTY_HOME/quick-add-catalog.json"
 
 echo "Preparing orca-proxy $JETTY_RELEASE_VERSION"

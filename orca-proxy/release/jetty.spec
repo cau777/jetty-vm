@@ -1,5 +1,6 @@
 # PyInstaller onedir build. The AppImage wraps this directory, keeping the
-# interpreter, mitmproxy, Qt and QtWebEngineProcess available to both modes.
+# interpreter, mitmproxy and the native Qt Quick UI available to both modes.
+import re
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -9,7 +10,8 @@ project_dir = spec_dir.parent
 repo = project_dir.parent
 datas = []
 for include in (
-    "static/**",
+    "qml/**",
+    "resources/**",
     "migrations/**",
     "requests_migrations/**",
 ):
@@ -38,16 +40,34 @@ a = Analysis(
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
-        "PySide6.QtWebEngineCore",
-        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtQuick",
+        "PySide6.QtQml",
+        "PySide6.QtQuickControls2",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+        "PySide6.QtWebChannel", "PySide6.QtWebSockets", "PySide6.QtPdf", "PySide6.QtCharts",
+        "PySide6.QtMultimedia", "PySide6.Qt3DCore", "PySide6.QtQuick3D", "PySide6.QtGraphs",
+        "PySide6.QtDataVisualization",
+    ],
     noarchive=False,
     optimize=0,
 )
+
+DROP = re.compile(
+    r"WebEngine|WebChannel|WebView|WebSockets|Qt63D|Qt3D|Quick3D|Charts|DataVisualization|Graphs|"
+    r"Qt6Pdf|QtPdf|Multimedia|SpatialAudio|TextToSpeech|Sensors|Location|Positioning|"
+    r"VirtualKeyboard|Scxml|StateMachine|RemoteObjects|Bluetooth|Nfc|SerialPort|SerialBus|"
+    r"Designer|Help|Lottie|QuickTimeline|HttpServer|Svg/Widgets|UiTools|"
+    r"Controls/(Fusion|Imagine|Universal|FluentWinUI3|iOS|macOS|Windows)|"
+    r"QuickControls2(Fusion|Imagine|Universal|FluentWinUI3|IOS|MacOS|Windows)",
+    re.IGNORECASE,
+)
+a.binaries = [binary for binary in a.binaries if not DROP.search(binary[0]) and not DROP.search(binary[1])]
+a.datas = [data for data in a.datas if not DROP.search(data[0]) and not DROP.search(data[1])]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

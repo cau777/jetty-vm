@@ -1,4 +1,4 @@
-# Jetty desktop app: an all-Python stack (PySide6 + QtWebEngine, embedded mitmproxy, AppImage)
+# Jetty desktop app: an all-Python stack (PySide6 Qt Quick, embedded mitmproxy, AppImage)
 
 **Date:** 2026-10-05
 **Method:** Primary-source only.
@@ -50,14 +50,14 @@ A single executable is strongly preferred over a multi-step install.
 ## 2. Decision
 
 **Stay all-Python.** One frozen executable contains the proxy, the daemon, the tray icon and the GUI. The GUI is
-**PySide6 + QtWebEngine showing the existing `orca-proxy` web UI**.
+**a native PySide6 Qt Quick (QML) application using Qt Quick Controls**. The existing browser UI is retired; the tray UI talks to the daemon through the same loopback API used by the CLI and agent skill.
 
 ### 2.1 Process model: one binary, several modes
 
 | Mode | Started by | Responsibility |
 |---|---|---|
 | `jetty daemon` | systemd user unit (`~/.config/systemd/user/`) | mitmproxy in-process, the management API, LXD orchestration, SSH config generation. Never imports Qt. |
-| `jetty tray` | XDG autostart entry (`~/.config/autostart/jetty.desktop`) | Tray icon, plus a QtWebEngine window pointed at the daemon's loopback API. |
+| `jetty tray` | XDG autostart entry (`~/.config/autostart/jetty.desktop`) | Tray icon and native Qt Quick window, using the daemon's loopback API. |
 | `jetty setup` | first launch | Copies itself to a stable path, writes the unit and autostart entry, and runs the privileged steps through `pkexec`. |
 | `jetty vm …`, `jetty status`, `jetty tunnel gateway` | agent, user, gateway provisioning | CLI over the same API. Replaces direct `lxc` calls in the skill and `python -m orca_proxy.tunnel gateway` in `jetty-lxd`. |
 
@@ -73,8 +73,7 @@ A single executable is strongly preferred over a multi-step install.
   shared a process, a proxy crash would remove the icon, which looks the same as "never started" or "the
   desktop's tray isn't showing it". As a separate process, the tray polls the daemon's loopback API and stays
   up to show the failure.
-- The proxy is the agent VMs' only web egress. The tray process carries QtWebEngine (Chromium), the component
-  most likely to crash or leak, so keeping it out of the daemon means a GUI fault never cuts the VMs off.
+- The proxy is the agent VMs' only web egress. The tray process carries Qt Quick and its QML UI, so keeping it out of the daemon means a GUI fault never cuts the VMs off.
 - systemd restarts the daemon (`Restart=`) and keeps its logs in the journal. The tray can be quit without
   stopping the proxy. No bridge between Qt's event loop and mitmproxy's asyncio loop (`qasync` or a proxy
   thread) is needed.
@@ -91,10 +90,11 @@ A single process that runs both, as a user unit bound to `graphical-session.targ
 rejected. It would get systemd restarts back, but the icon could still not show that the proxy had crashed,
 and showing that is the reason to have the tray.
 
-**The UI needs no changes to work in the window.** The daemon already serves it: `create_app()` registers
-`GET /` → `static/index.html` plus `add_static("/", static_dir)` (`orca-proxy/src/orca_proxy/app.py:75-86`) on
-`127.0.0.1:$ORCA_PROXY_MANAGEMENT_PORT`, default 8080 (`config.py:26-27`). The tray window loads that URL, so the
-browser UI and the app window are the same code. The setup wizard is built as more pages of the same UI.
+**The tray owns a native QML UI.** The aiohttp daemon exposes only its loopback API at
+`127.0.0.1:$ORCA_PROXY_MANAGEMENT_PORT` (default 8080; `config.py`). The tray uses Python `QAbstractListModel`
+classes and a worker pool to keep HTTP calls off the GUI thread. Native Qt dialogs provide the project-folder
+picker; the daemon remains the API contract for the CLI and the agent skill. First-run setup is a QML screen driven
+by the same API.
 
 ### 2.2 The daemon needs a "not configured" state
 
@@ -158,72 +158,31 @@ This removes the "absolute imports, not package-relative" workaround that `proxy
 `install_log_filter` still matters in-process. It filters the `mitmproxy.proxy.mode_servers` logger
 (`orca_proxy/tunnel.py:57-58`), and embedding does not change what mitmproxy logs.
 
-### 2.4 GUI: PySide6 + QtWebEngine, with QSystemTrayIcon
+### 2.4 GUI: PySide6 Qt Quick (QML), with QSystemTrayIcon
 
-**How the tray icon works on Linux.** The QSystemTrayIcon docs list Linux support as "All Linux desktop
-environments that implement the D-Bus StatusNotifierItem specification, including KDE, Gnome, Xfce, LXQt, and
-DDE", plus "window managers … for X11 that implement the freedesktop.org XEmbed system tray specification". They
-add that GNOME Shell 3.26+ may not support all activation reasons without shell extensions
-(doc.qt.io/qt-6/qsystemtrayicon.html). From the qtbase 6.8 source:
-- **The D-Bus tray is chosen by `shouldUseDBusTray()`.** On any non-`xcb` platform (Wayland) it always returns
-  true, with the comment "There's no other tray implementation to fallback to on non-X11". On X11 it returns true
-  only if `QDBusMenuConnection().isWatcherRegistered()` (`qgenericunixthemes.cpp:80-90`). The GNOME, KDE and
-  generic themes all return `new QDBusTrayIcon()` when it is true (`:477-482`, `:1271-1276`, `:1468-1473`).
-- **Availability means a watcher is registered.** `QDBusTrayIcon::isSystemTrayAvailable()` returns
-  `conn->isWatcherRegistered()`, with the comment "If the KDE watcher service is registered, we must be on a
-  desktop where a StatusNotifier-conforming system tray exists" (`qdbustrayicon.cpp:335-343`). The watcher
-  service is `org.kde.StatusNotifierWatcher` (`:71`). `QSystemTrayIcon::isSystemTrayAvailable()` delegates to
-  this (`qsystemtrayicon_qpa.cpp:79-86`).
+**How the tray icon works on Linux.** The QSystemTrayIcon docs list Linux support as desktops implementing the
+D-Bus StatusNotifierItem specification, plus X11 window managers implementing the freedesktop.org XEmbed tray.
+On a GNOME desktop without a StatusNotifier host, `QSystemTrayIcon.isSystemTrayAvailable()` returns false;
+`jetty tray` opens the management window directly and the `.desktop` launcher remains available.
 
-So on a GNOME desktop with no SNI host (no AppIndicator extension), `isSystemTrayAvailable()` is false.
-`jetty tray` should then open the window directly, and a regular `.desktop` launcher stays as the way back in.
+**UI architecture.** Qt Quick Controls with the Material style render the Variant A console layout: navigation,
+entity tables, an inspector and editor drawer. Python `QAbstractListModel` subclasses hold the view data.
+A `QThreadPool` worker performs every HTTP request to the loopback API, including polling for VM and gateway
+setup jobs. QML's `FolderDialog` provides the native project folder chooser. The daemon still imports no Qt.
 
-**What QtWebEngine ships.** Measured from the `pyside6_addons-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl` wheel
-(PyPI):
-- The wheel is 175.1 MB and unpacks to 438 MB.
-- WebEngine-related files unpack to **≈266 MB** (≈112 MB compressed). The largest are:
-  - `libQt6WebEngineCore.so.6`: 203.8 MB
-  - `qtwebengine_devtools_resources.pak`: 11.7 MB
-  - `icudtl.dat`: 10.5 MB
-  - per-locale `.pak` files: 1–1.6 MB each
-- The helper `PySide6/Qt/libexec/QtWebEngineProcess` is in the same wheel.
-
-`pyside6_essentials` (QtCore/Gui/Widgets and others) is a separate 80.1 MB wheel. **Inference:** devtools
-resources and unused locales are candidates to exclude at freeze time.
+**Bundle contents.** Qt Quick, Qt QML and Qt Quick Controls are required. The PyInstaller spec includes the
+Material and Basic styles, Qt Quick Dialogs, and the app's QML source files. QtWebEngine and its Chromium
+resources are excluded completely. The finished QML build measured 272 MB unpacked and 91 MB as an AppImage,
+versus 660 MB and 239.2 MB for the v2.0.0 QtWebEngine build. The 109.7 MB prototype was larger because its
+pruning rules had not yet been applied to the complete build.
 
 **Two consequences of the PySide6 wheel tags:**
 - The tag is `manylinux_2_34`, so the bundle needs **glibc ≥ 2.34** on the target. Ubuntu 22.04 ships
-  `libc6 2.35` (packages.ubuntu.com/jammy/libc6), so 22.04 is the oldest Ubuntu LTS this stack can support. See
-  §2.5 for building there.
-- PySide6, PySide6-Essentials and PySide6-Addons are all licensed "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
-  (PyPI metadata). Under LGPLv3, Qt's own obligations page says:
-  - "The user is allowed to change and re-link the library used in the application".
-  - The complete corresponding library source (or a written offer) must be provided.
-  - Users must be notified with "a copy of the LGPL license text" and "a prominent notice".
-  - Static linking risks the application no longer being "work that uses the library"
-    (qt.io/licensing/open-source-lgpl-obligations).
-
-  PyInstaller in onedir mode keeps Qt as separate shared libraries inside the bundle, which preserves
-  relinkability (**inference**). PyInstaller itself imposes nothing: bundles "can be shipped with whatever
-  license you want, as long as it complies with the licenses of your dependencies" (pyinstaller.org license
-  page).
-
-**Risk: QtWebEngine's sandbox vs Ubuntu's user-namespace restriction.**
-- Qt WebEngine's Linux sandbox needs "the anonymous namespaces feature". On Ubuntu with AppArmor, administrators
-  "may need to adjust `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` to 0 or implement custom AppArmor
-  profiles". The sandbox can be disabled with `QTWEBENGINE_DISABLE_SANDBOX=1`, `--no-sandbox`, or
-  `QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox` (Qt WebEngine Platform Notes).
-- Ubuntu 24.04 turned that restriction on by default: "the Ubuntu kernel now restricts the use of unprivileged
-  user namespaces" (Ubuntu 24.04 release notes). The opt-out is an AppArmor profile containing a `userns,` rule
-  (ubuntu.com blog, "Restricted unprivileged user namespaces", 23.10).
-- An AppImage mounts at a fresh `/tmp/.mount_*` path on each launch (see `$APPDIR` in §2.5), which makes a
-  path-based AppArmor profile awkward.
-- **Unverified:** whether QtWebEngine 6.11 actually fails to start, or degrades, under the 24.04 default. This
-  needs an empty-VM test.
-- **Options:**
-  - (a) Set `QTWEBENGINE_DISABLE_SANDBOX=1`. The window only ever loads Jetty's own loopback UI, never arbitrary
-    web content, so this is a defensible but conscious trade-off.
-  - (b) Install an AppArmor profile during the `pkexec` setup step.
+  `libc6 2.35`, so 22.04 is the oldest Ubuntu LTS this stack can support. See §2.5 for building there.
+- PySide6 and Qt are licensed under their offered LGPL/GPL alternatives. Under LGPLv3, Qt's obligations page says
+  users may change and relink the library used by the application and the corresponding library source or a written
+  offer must be provided. PyInstaller onedir keeps Qt as separate shared libraries (**inference**); keep the license
+  texts and source links in `release/THIRD_PARTY_NOTICES.md`.
 
 ### 2.5 Packaging: PyInstaller onedir inside an AppImage
 
@@ -271,18 +230,14 @@ does not bundle libc, and libc "is forward compatible to newer releases, but it 
 `manylinux_2_34` floor (§2.4), the CI build runs in an **Ubuntu 22.04** container.
 
 **Package data that must be collected.** Several files are located relative to `__file__`:
-- `static/` (`app.py:80`)
+- `qml/` and `resources/quick-add-catalog.json` (native tray UI and setup catalog)
 - `migrations/` and `requests_migrations/` (`db.py:5-6`)
 
 PyInstaller sets a bundled module's `__file__` "to the correct path relative to the bundle folder"
-(pyinstaller.org runtime-information), so the code keeps working, provided these directories (and
-`quick-add-catalog.json`) are declared as `datas` in the spec or an `orca_proxy` hook.
+(pyinstaller.org runtime-information), so the code keeps working, provided these directories and the catalog are declared as `datas` in the spec or an `orca_proxy` hook.
 
-**Rough size (inference, not measured on a real build):**
-- the Python venv: 109 MB unpacked today (`du -sh orca-proxy/.venv/lib/python3.13/site-packages`)
-- the QtWebEngine files (≈266 MB) plus the used part of Essentials
-
-That puts a compressed AppImage at about 200 MB. The first CI build will give the real number.
+**Measured implementation size:** the Ubuntu 22.04 release build is 272 MB unpacked and a 91 MB AppImage. Its
+SHA-256 check and frozen CLI/tray smoke checks passed; the AppDir contains no QtWebEngine libraries or helper.
 
 ### 2.6 Privileged setup with `pkexec`
 
@@ -386,21 +341,18 @@ Rejected because:
 - **It adds Linux system dependencies.** Tauri needs `libwebkit2gtk-4.1` for the webview and
   `libayatana-appindicator3` "for system tray functionality" (v2.tauri.app/start/prerequisites). Those become
   host package requirements, or get bundled into the AppImage.
-- **Its main advantage doesn't hold.** Reusing the web UI is also achieved by QtWebEngine (§2.4).
+- **The selected desktop is already native Qt.** Tauri would add a Rust toolchain, sidecar boundary, and Linux webview dependencies without serving a required browser UI.
 
-### 3.3 PySide6 Widgets only (no QtWebEngine)
+### 3.3 PySide6 Widgets only
 
-This would save the ≈266 MB of WebEngine files (§2.4). Rejected because the rules, credentials and request-log
-screens already exist as a dependency-free web UI (`app.py:75-86`). Widgets would mean rewriting them in Qt and
-then maintaining two UIs, since the web UI stays useful from a browser.
+Widgets are a viable native alternative, but Qt Quick was selected for its declarative layout, Material controls,
+and direct support for the live progress and responsive screens. The browser UI is no longer maintained.
 
 ### 3.4 pywebview (system WebKitGTK) plus a separate tray library
 
-This is the smallest bundle and also reuses the web UI. Rejected because its Linux GTK backend depends on system
-PyGObject and typelibs (`python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1`, WebKit2 ≥ 2.22) or on a
-Qt backend anyway (pywebview.flowrl.com installation guide). **Inference:** freezing PyGObject against whatever
-GTK/WebKit the host has is the least predictable option across distros. Its Qt backend would bring QtWebEngine
-back anyway.
+This option would keep a browser UI that Jetty no longer needs. Its Linux GTK backend also depends on system
+PyGObject and typelibs (`python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1`, WebKit2 ≥ 2.22), which
+are less predictable across distributions (**inference**).
 
 ### 3.5 Nuitka onefile (packaging alternative to AppImage)
 
@@ -429,11 +381,9 @@ dependency set. **Unverified:** whether Nuitka compiles mitmproxy 10.4.2 and PyS
 | mitmproxy_rs's macOS/Windows packages are conditional dependencies, never pulled in on Linux | Verified | `mitmproxy_rs-0.6.3` `Requires-Dist` markers; `hook-mitmproxy_rs.py` |
 | QSystemTrayIcon uses StatusNotifierItem over D-Bus on Wayland always, on X11 when a watcher exists (else XEmbed) | Verified | qtbase 6.8 `qgenericunixthemes.cpp:80-90`; Qt docs |
 | `isSystemTrayAvailable()` means an `org.kde.StatusNotifierWatcher` is registered | Verified | `qdbustrayicon.cpp:71,335-343`; `qsystemtrayicon_qpa.cpp:79-86` |
-| QtWebEngine ≈266 MB unpacked (core lib 203.8 MB); Addons wheel 175 MB, Essentials 80 MB | Measured | PyPI wheels, PySide6 6.11.2 |
+| The v2.0.0 QtWebEngine build was 660 MB unpacked / 239.2 MB AppImage; the full QML build is 272 MB / 91 MB | Measured | release AppImages and Ubuntu 22.04 feature build |
 | PySide6 wheels need glibc ≥ 2.34 (`manylinux_2_34`); Ubuntu 22.04 has 2.35 | Verified | PyPI filenames; packages.ubuntu.com/jammy/libc6 |
 | PySide6 is LGPL-3.0-only OR GPL-2.0/3.0; LGPL requires user relinkability, source, notice | Verified | PyPI metadata; qt.io LGPL obligations page |
-| QtWebEngine sandbox needs unprivileged user namespaces; Ubuntu 24.04 restricts them by default | Verified | Qt WebEngine Platform Notes; Ubuntu 24.04 release notes |
-| Whether QtWebEngine 6.11 actually fails under that default | **Unverified** | needs an empty-VM test |
 | Classic AppImages need libfuse2 (`libfuse2t64` on 24.04); type2-runtime is static and needs no libfuse2 | Verified | docs.appimage.org; type2-runtime README |
 | type2-runtime still needs a host `fusermount*`; snapd `Depends: fuse3`, which ships `fusermount3` | Verified | `runtime.c:417-455`; apt/packages.ubuntu.com |
 | `$APPIMAGE` = resolved path of the AppImage; `$APPDIR` = mountpoint | Verified | docs.appimage.org env vars; `runtime.c:1642,1833` |
@@ -446,17 +396,13 @@ dependency set. **Unverified:** whether Nuitka compiles mitmproxy 10.4.2 and PyS
 
 ## 5. Open questions
 
-1. **QtWebEngine sandbox on Ubuntu 24.04+.** Does it fail, or quietly run unsandboxed? Should `jetty tray` set
-   `QTWEBENGINE_DISABLE_SANDBOX=1` (trusted loopback content only), or should setup install an AppArmor
-   `userns,` profile that covers the AppImage mount path? Test on clean 22.04, 24.04 and 26.04 VMs.
-2. **Re-login reset.** Is logging out of the desktop enough to restart the systemd user manager with the new
+1. **Re-login reset.** Is logging out of the desktop enough to restart the systemd user manager with the new
    `lxd` group, or does lingering or another session force a reboot? Test empirically.
-3. **Distro scope.** Ubuntu-only (snap LXD, snapd guarantees `fusermount3`), or other distros too? Elsewhere
+2. **Distro scope.** Ubuntu-only (snap LXD, snapd guarantees `fusermount3`), or other distros too? Elsewhere
    neither snapd nor `fuse3` can be assumed, and the LXD install step differs.
-4. **`exec` port.** Use `record-output` for all provisioning, or add an aiohttp websocket client for an
+3. **`exec` port.** Use `record-output` for all provisioning, or add an aiohttp websocket client for an
    interactive `jetty vm exec`?
-5. **Real bundle size** after excluding WebEngine devtools resources and unused locales (first CI build).
-6. **Self-update.** Reuse `install.sh`'s release verification to replace `~/.local/bin/jetty` and restart the
+4. **Self-update.** Reuse `install.sh`'s release verification to replace `~/.local/bin/jetty` and restart the
    unit, or rely on AppImage's zsync update mechanism. Not researched here.
 
 ## 6. Corrections to claims made in the design discussion
@@ -470,26 +416,20 @@ dependency set. **Unverified:** whether Nuitka compiles mitmproxy 10.4.2 and PyS
   `running()` hook (`proxy_addon.py:14-22, 83-91`), and that hook keeps working when embedded. What *is* new is a
   constraint: `DumpMaster` must be constructed **inside** a running loop (`master.py:44-47`). The earlier snippet
   showed module-level construction, which would raise.
-- **"QtWebEngine is about 200 MB unpacked."** Measured at ≈266 MB for WebEngine-related files in PySide6 6.11.2,
-  of which `libQt6WebEngineCore.so.6` alone is 203.8 MB.
+- The v2.0.0 desktop used QtWebEngine and measured 239.2 MB as an AppImage. The finished QML implementation
+  measures 91 MB as an AppImage; its Ubuntu 22.04 build excludes the QtWebEngine libraries and helper.
 - **"Recent Ubuntu releases don't ship `libfuse2`; use the static type-2 runtime."** Correct as far as it went,
   but the static runtime still needs a host `fusermount*` binary. On Ubuntu that is guaranteed through
   `snapd → fuse3`, not by the runtime itself.
 - **"Build in CI on the oldest distro you support (e.g. Ubuntu 22.04)."** Confirmed, and 22.04 is also a hard
   floor: PySide6 6.11 wheels are `manylinux_2_34`, so older glibc (for example Debian 11's) can't run the bundle.
-- **New risk not raised before:** Ubuntu 24.04's default restriction on unprivileged user namespaces versus the
-  QtWebEngine sandbox (§2.4).
 - **New risk not raised before:** LXD `exec` over the REST API is websocket-based (§2.7). This affects porting
   `jetty-lxd`'s `lxc exec` calls.
 
-## 7. Next steps (in order)
+## 7. Implementation status
 
-1. **Embed mitmproxy and add the subcommands.** Run `DumpMaster` in-process (§2.3) behind `jetty daemon`, and add
-   `jetty setup` and `jetty status`, still installed from source the way it is now. The current pytest suite and
-   `tests/e2e/lxd-gateway-checks.sh` validate this without any GUI.
-2. **Add the "not configured" state (§2.2)** and move `deploy/jetty-lxd`'s steps into daemon code over the LXD
-   REST socket (§2.7). Shrink `orca-ssh-setup` to the agent-only steps (§2.9).
-3. **Add `jetty tray`** with PySide6: QSystemTrayIcon with a fallback window, and a QtWebEngine window on the
-   loopback UI. Add the setup-wizard pages to the web UI, including `pkexec` (§2.6) and the re-login step (§2.8).
-4. **Build the PyInstaller onedir and AppImage** (type-2 static runtime) in `release.yml` on an Ubuntu 22.04
-   container (§2.5). Then add self-install to `~/.local/bin/jetty` and self-update.
+The embedded proxy and CLI, LXD gateway orchestration, first-run setup, and native QML desktop are implemented.
+VM creation and gateway setup expose background progress jobs while CLI commands wait for completion. The
+Ubuntu 22.04 PyInstaller/AppImage build passed; its frozen `jetty status` and `jetty tray` were exercised against
+a temporary fake loopback API. Full pytest and offline screenshots cover the API jobs, models, four management
+views, setup, and VM creation states.

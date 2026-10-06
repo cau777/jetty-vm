@@ -9,7 +9,7 @@ one actually in `src/orca_proxy/`, not an aspirational draft.
 
 ## Destination
 
-A single self-hosted app (Web UI + Management API) replacing both the old
+A single self-hosted desktop manager (native UI + Management API) replacing both the old
 CLIProxyAPI broker and the mitmproxy gh-proxy from the `orca-ssh-setup` skill.
 It forces all outbound 80/443 traffic from each registered VM through itself
 by network topology (agent-proof — a VM's root user cannot bypass it): agent
@@ -79,7 +79,7 @@ Two request-logging tables — `connections` and `http_requests` — live in a
 ## Management API surface (#9)
 
 Loopback-only aiohttp app (`127.0.0.1:8080` by default), **no authentication**
-(#6) — the Management API and same-origin Web UI are trusted by virtue of
+(#6) — the loopback Management API is trusted by virtue of
 binding to loopback only; VMs and remote callers have no network path to it.
 
 All entities use full-replacement `PUT` — idempotent by construction, no
@@ -120,7 +120,7 @@ Errors use one envelope shape, `errors.py`:
 {"error": {"code": "validation_failed", "message": "...", "fields": {"priority": "..."}}}
 ```
 `fields` is present only on `422`s that pinpoint specific fields — this is
-what the Web UI's editor drawer renders inline. Codes: `invalid_json` (400),
+what the native UI's editor drawer renders inline. Codes: `invalid_json` (400),
 `not_found` (404), `conflict` (409), `validation_failed` (422),
 `credential_unavailable` (502, proxy-only — see Credential execution below).
 
@@ -274,7 +274,7 @@ the proxy core and (conceptually) the logging layer.
    `(vm_selector, hostname[, path_prefix])` only, not HTTP method.
 6. Every evaluation step is captured in a `trace` (`TraceEntry` list:
    `matched_terminal` / `path_no_match_continue` / `skipped_unsafe_path`)
-   that's persisted with the request log row and rendered in the Web UI's
+   that's persisted with the request log row and rendered in the native UI's
    decision inspector — so "why did this request get this outcome" is always
    answerable from a single log entry, not by re-deriving it from the live
    Rule set.
@@ -407,35 +407,28 @@ Blue-green deployment, entirely unprivileged, done by Jetty's top-level
   reliability edge case, not a credential-leak or Block-bypass, which is the
   bar the destination sets for v1 scope.
 
-## Web UI (#7, #15)
+## Native desktop UI (#7, #15)
 
-Dependency-free vanilla JS/HTML/CSS, no build step, no framework — evolving
-the accepted Variant A prototype (entity-console layout: left nav, dense
-tables, contextual inspector, editor drawer) directly rather than a rewrite.
-Served as static files by the same aiohttp process as the Management API
-(`app.py`'s `add_static`), not a separate frontend server.
+The management window uses PySide6 Qt Quick Controls (Material, dark) and
+reproduces the accepted Variant A console layout: left navigation, dense
+tables, a contextual inspector, and a right-side editor drawer. The tray
+process owns the UI and talks to the separate aiohttp daemon through its
+loopback API. The daemon serves no HTML pages. Python `QAbstractListModel`
+instances feed the QML views, and a thread pool keeps HTTP requests off the
+GUI thread.
 
-- Views: VMs, Credentials, Rules, Logs — table + inspector per entity, an
-  editor drawer for Rule/Credential/VM writes with inline field-error
-  rendering sourced directly from the API's `fields` error envelope.
-- **Quick Add**: a single source-of-truth JSON file,
-  `static/quick-add-catalog.json`, loaded both by the frontend's own
-  `fetch()` and by a Python compatibility test
-  (`tests/test_quick_add_catalog.py`) — not a new API endpoint, and not
-  duplicated data. Contains the three known-working Credential command
-  templates: `gh auth token` (GitHub), and pure-bash (curl + jq)
-  implementations of the OAuth-refresh logic for Claude/Codex (wire format
-  below). A Credential command is a plain bash string handed to `bash -lc`
-  (`credential_exec.py`) — it must never depend on anything beyond what a
-  bare VM/host shell already has (curl, jq), so there is no packaged
-  console-script or venv `bin/`-on-`PATH` dependency to keep working across
-  installs/upgrades. `tests/test_refresh_scripts.py` runs the catalog's
-  actual command strings (loaded from the same JSON, not a duplicated copy)
-  through the real `CredentialCache` execution path against a stubbed
-  `curl`, so the catalog itself — the thing that actually ships — is what's
-  under test.
-- No URL-based routing — in-memory view state, matching the prototype.
-- Logs view refresh is a manual button, not polling.
+- Views: VMs, Credentials, Rules, Logs. Rule and credential editors show the
+  API's field-level validation errors. VM and gateway provisioning report
+  asynchronous job stages from the daemon; CLI commands follow those jobs
+  until completion.
+- **Quick Add**: `resources/quick-add-catalog.json` is the single source of
+  truth loaded by the QML backend and compatibility tests. It contains the
+  known-working GitHub, Claude Code, and Codex Credential command templates.
+  Credential commands remain plain bash strings executed by
+  `credential_exec.py`; `tests/test_refresh_scripts.py` executes the shipped
+  catalog commands against a stubbed `curl`.
+- The Logs view refreshes while it is open and shows connection metadata,
+  matched rules, per-request evaluation traces, and redacted headers.
 
 ## OAuth refresh wire format (#2)
 
@@ -496,7 +489,7 @@ explicitly out of scope — a monitoring feature, not part of this spec.
 ## orca-ssh-setup integration contract (#14)
 
 The Provisioning Agent (`orca-ssh-setup` skill) is a first-class Management
-API caller, not a human using the Web UI. Full registration sequence,
+API caller, not a human using the native UI. Full registration sequence,
 implemented in `orca-ssh-setup/SKILL.md` steps 3, 4 and 6, each step idempotent
 and failing loud rather than proceeding past an unconfirmed state:
 
@@ -505,7 +498,7 @@ and failing loud rather than proceeding past an unconfirmed state:
 2. Register needed Credentials via `PUT` (never gated behind Web UI Quick
    Add — that's a human convenience over the same API, not a separate
    mechanism), reading command/TTL from the same `quick-add-catalog.json`
-   the Web UI uses.
+   the native UI uses.
 3. `jetty-lxd setup` (idempotent), then `jetty-lxd launch`, which allocates
    the VM's address, registers it (`PUT /api/v1/vms/{name}`) before its first
    boot, and installs the Interception CA. Enforcement is the topology
