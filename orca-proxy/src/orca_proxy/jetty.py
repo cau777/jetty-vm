@@ -365,6 +365,34 @@ class JettyLxd:
             instance = await self._instance(client, name)
             return {"name": name, "status": (instance or {}).get("status", "unknown")}
 
+    async def prepare_port_forward(self, name: str, public_key: str) -> tuple[int, str]:
+        """Authorize Jetty's forwarding key on a running VM and return (gateway SSH port, host key).
+
+        The host key comes over the LXD socket, so the SSH connection that
+        follows can verify it strictly even after a VM is recreated.
+        """
+        row = vms_repo.get(self.db, name)
+        if row is None:
+            raise NotFound(f"VM '{name}' not found")
+        script = (
+            'set -e; d=/home/ubuntu/.ssh; f="$d/authorized_keys"; '
+            'install -d -m 700 -o ubuntu -g ubuntu "$d"; touch "$f"; '
+            'grep -qxF "$JETTY_KEY" "$f" || printf "%s\\n" "$JETTY_KEY" >> "$f"; '
+            'chown ubuntu:ubuntu "$f"; chmod 600 "$f"; '
+            "cat /etc/ssh/ssh_host_ed25519_key.pub"
+        )
+        async with LxdClient() as client:
+            instance = await self._instance(client, name)
+            if instance is None:
+                raise NotFound(f"VM '{name}' not found")
+            if instance.get("status") != "Running":
+                raise LxdError(f"VM '{name}' is not running")
+            result = await client.execute(name, ["sh", "-c", script], environment={"JETTY_KEY": public_key})
+        _require_success(result, ["authorize Jetty port forwarding key"], name)
+        host_key = " ".join(result.stdout.decode(errors="replace").split()[:2])
+        octet = int(ipaddress.ip_address(row["ip_address"])) % 256
+        return SSH_PORT_BASE + octet, host_key
+
     async def execute_vm(self, name: str, command: list[str]) -> ExecResult:
         name = validation.validate_name(name)
         if name == GATEWAY:

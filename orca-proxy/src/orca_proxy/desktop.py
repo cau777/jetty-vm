@@ -121,6 +121,7 @@ class DesktopBackend(QObject):
     jobChanged = Signal()
     messageChanged = Signal()
     projectDirChanged = Signal()
+    portsChanged = Signal()
 
     def __init__(self, *, force_setup: bool = False, demo: bool = False):
         super().__init__()
@@ -142,6 +143,7 @@ class DesktopBackend(QObject):
         self._registered_vms: list[dict] = []
         self._raw_vms: list[dict] = []
         self._rules: list[dict] = []
+        self._ports: list[dict] = []
         self._system_status: dict[str, Any] = {"state": "unknown", "lxd_available": False}
         self._jetty_status: dict[str, Any] = {"gateway": "unknown", "vms": []}
         self._ready = False
@@ -238,6 +240,12 @@ class DesktopBackend(QObject):
         self._load("/api/v1/credentials", lambda body: self.credentialsModel.replace(body.get("credentials", [])))
         self._load("/api/v1/requests?limit=100", lambda body: self.connectionsModel.replace(body.get("connections", [])))
         self._load("/readyz", lambda body: self._set_ready(bool(body.get("ready"))))
+        self._load("/api/v1/jetty/ports", lambda body: self._set_ports(body.get("ports", [])))
+
+    def _set_ports(self, ports: list[dict]) -> None:
+        if ports != self._ports:
+            self._ports = ports
+            self.portsChanged.emit()
 
     def _replace_raw_vms(self, vms: list[dict]) -> None:
         self._raw_vms = vms
@@ -277,6 +285,10 @@ class DesktopBackend(QObject):
         ]
         self.rulesModel.replace(self._rules)
         self.credentialsModel.replace([{"name": "claude-code-subscription", "command": "claude-token", "ttl_seconds": 1800, "status": "valid", "expires_at": None}])
+        self._set_ports([
+            {"vm_name": "agent-harness", "vm_port": 5173, "host_port": 5173, "persistent": False, "state": "active", "error": None, "url": "http://localhost:5173"},
+            {"vm_name": "agent-harness", "vm_port": 8000, "host_port": 18000, "persistent": True, "state": "retrying", "error": "connect to host 10.201.0.2 port 2211: Connection refused", "url": "http://localhost:18000"},
+        ])
         self.connectionsModel.replace([{"id": 42, "started_at": "2026-10-05T17:30:00Z", "vm_name": "agent-harness", "destination_hostname": "api.github.com", "destination_ip": "140.82.112.5", "destination_port": 443, "sni_present": True, "ech_present": False, "intercepted": False, "outcome": "allow_rule", "duration_ms": 81, "matched_rule": {"name": "github", "priority": 10}}])
         self._rebuild_vms()
         self.statusChanged.emit()
@@ -308,6 +320,10 @@ class DesktopBackend(QObject):
     @Property(str, constant=True)
     def homeDir(self) -> str:
         return str(Path.home())
+
+    @Property("QVariantList", notify=portsChanged)
+    def portForwards(self):
+        return self._ports
 
     @Property(str, notify=projectDirChanged)
     def projectDir(self) -> str:
@@ -558,6 +574,49 @@ class DesktopBackend(QObject):
             self.refresh()
 
         self._request("POST", f"/api/v1/credentials/{encoded}/refresh", callback=complete)
+
+    def _port_request(self, method: str, path: str, body: dict | None, failure: str, success: str) -> None:
+        def complete(ok, result):
+            if not ok:
+                self._notify(str(result.get("message", failure)), "danger")
+                return
+            self._notify(success, "success")
+            self._load("/api/v1/jetty/ports", lambda body: self._set_ports(body.get("ports", [])))
+
+        self._request(method, path, body, complete)
+
+    @Slot(str, str, str, bool)
+    def openPort(self, vm_name: str, vm_port: str, host_port: str, persistent: bool) -> None:
+        try:
+            body: dict[str, Any] = {"vm_port": int(vm_port), "persistent": persistent}
+            if host_port.strip():
+                body["host_port"] = int(host_port)
+        except ValueError:
+            self._notify("Ports must be numbers.", "danger")
+            return
+        encoded = urllib.parse.quote(vm_name, safe="")
+        local = body.get("host_port", body["vm_port"])
+        self._port_request(
+            "POST", f"/api/v1/jetty/vms/{encoded}/ports", body,
+            "Port forward failed.", f"localhost:{local} forwards to {vm_name}:{body['vm_port']}.",
+        )
+
+    @Slot(str, int)
+    def closePort(self, vm_name: str, host_port: int) -> None:
+        encoded = urllib.parse.quote(vm_name, safe="")
+        self._port_request(
+            "DELETE", f"/api/v1/jetty/vms/{encoded}/ports/{host_port}", None,
+            "Could not close the port forward.", f"Closed localhost:{host_port}.",
+        )
+
+    @Slot(str, int, bool)
+    def setPortPersistent(self, vm_name: str, host_port: int, persistent: bool) -> None:
+        encoded = urllib.parse.quote(vm_name, safe="")
+        self._port_request(
+            "PATCH", f"/api/v1/jetty/vms/{encoded}/ports/{host_port}", {"persistent": persistent},
+            "Could not update the port forward.",
+            f"localhost:{host_port} " + ("now starts with Jetty." if persistent else "closes when Jetty stops."),
+        )
 
     @Slot(str)
     def deleteVm(self, name: str) -> None:

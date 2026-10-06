@@ -57,4 +57,5 @@ async def delete_vm(request: web.Request) -> web.Response:
     if vms_repo.referenced_by_rule(conn, name):
         raise Conflict(f"VM '{name}' is referenced by a Rule; update or delete it first")
     vms_repo.delete(conn, name)
+    await request.app["port_forwards"].drop_vm(name)
     return web.Response(status=204)

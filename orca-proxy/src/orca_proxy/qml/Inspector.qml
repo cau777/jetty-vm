@@ -64,6 +64,94 @@ Pane {
                     JettyButton { text: "Delete"; destructive: true; onClicked: root.confirmationRequested("vm", root.backend.selection.name, "delete") }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544" }
+                Label { text: "PORTS"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.1 }
+                Label {
+                    Layout.fillWidth: true
+                    visible: portList.count === 0
+                    text: "Forward a VM port to localhost on this computer, for example a dev server."
+                    color: "#8793a5"
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 11
+                }
+                Repeater {
+                    id: portList
+                    model: (root.backend.portForwards || []).filter(port => port.vm_name === root.backend.selection.name)
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 2
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Rectangle {
+                                width: 8; height: 8; radius: 4
+                                color: modelData.state === "active" ? "#72e0bd" : modelData.state === "retrying" ? "#ff7b7b" : "#ffc56e"
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "localhost:" + modelData.host_port
+                                font.family: "monospace"
+                                elide: Text.ElideRight
+                            }
+                            JettyButton { text: "Open"; flat: true; implicitHeight: 30; onClicked: Qt.openUrlExternally(modelData.url) }
+                            JettyButton { text: "Close"; flat: true; implicitHeight: 30; onClicked: root.backend.closePort(modelData.vm_name, modelData.host_port) }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            CheckBox {
+                                text: "Start with Jetty"
+                                checked: modelData.persistent
+                                padding: 0
+                                font.pixelSize: 11
+                                Layout.fillWidth: true
+                                onToggled: root.backend.setPortPersistent(modelData.vm_name, modelData.host_port, checked)
+                            }
+                            Label { text: "VM port " + modelData.vm_port; color: "#8793a5"; font.pixelSize: 11 }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: !!modelData.error
+                            text: modelData.error || ""
+                            color: "#ff9a9a"
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    TextField {
+                        id: vmPortField
+                        Layout.fillWidth: true
+                        placeholderText: "VM port"
+                        validator: IntValidator { bottom: 1; top: 65535 }
+                        onAccepted: forwardButton.clicked()
+                    }
+                    TextField {
+                        id: hostPortField
+                        Layout.fillWidth: true
+                        placeholderText: "Host port"
+                        validator: IntValidator { bottom: 1024; top: 65535 }
+                        onAccepted: forwardButton.clicked()
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    CheckBox { id: persistentBox; text: "Start with Jetty"; padding: 0; font.pixelSize: 11; Layout.fillWidth: true }
+                    JettyButton {
+                        id: forwardButton
+                        text: "Forward"
+                        enabled: vmPortField.acceptableInput
+                        onClicked: {
+                            root.backend.openPort(root.backend.selection.name, vmPortField.text, hostPortField.text, persistentBox.checked)
+                            vmPortField.clear()
+                            hostPortField.clear()
+                            persistentBox.checked = false
+                        }
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544" }
                 Label { text: "PREPARE WITH AN AGENT"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.1 }
                 AgentHandoff { Layout.fillWidth: true; backend: root.backend; vmName: root.backend.selection.name || "" }
             }

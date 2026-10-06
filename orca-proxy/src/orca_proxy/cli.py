@@ -116,6 +116,18 @@ def _parser() -> argparse.ArgumentParser:
     vm_upload.add_argument("--file", help="host file to upload; stdin is used by default")
     vm_upload.add_argument("--mode", type=lambda value: int(value, 8), default=0o644, help="guest file mode in octal")
     vm_upload.add_argument("--owner", choices=("ubuntu", "root"), default="ubuntu")
+    vm_port = vm_modes.add_parser("port", help="forward VM ports to localhost on this computer")
+    port_modes = vm_port.add_subparsers(dest="port_mode", required=True)
+    port_open = port_modes.add_parser("open", help="forward a VM port; one-time unless --persistent")
+    port_open.add_argument("name")
+    port_open.add_argument("vm_port", type=int)
+    port_open.add_argument("--host-port", type=int, help="localhost port on this computer (default: the VM port)")
+    port_open.add_argument("--persistent", action="store_true", help="reopen whenever Jetty starts")
+    port_list = port_modes.add_parser("list", help="list port forwards")
+    port_list.add_argument("name", nargs="?")
+    port_close = port_modes.add_parser("close", help="stop a port forward")
+    port_close.add_argument("name")
+    port_close.add_argument("host_port", type=int)
 
     ssh = modes.add_parser("ssh-config", help="print SSH entries for the gateway and agent VMs")
     ssh.add_argument("names", nargs="*")
@@ -150,7 +162,7 @@ def _status() -> int:
 
 
 def _vm(args) -> int:
-    encoded_name = urllib.parse.quote(getattr(args, "name", ""), safe="")
+    encoded_name = urllib.parse.quote(getattr(args, "name", None) or "", safe="")
     if args.vm_mode == "create":
         body = {
             "name": args.name,
@@ -203,6 +215,31 @@ def _vm(args) -> int:
         }
         response = _api("POST", f"/api/v1/jetty/vms/{encoded_name}/files", body)
         print(f"Uploaded {response['bytes_written']} bytes to {args.name}:{response['path']}")
+        return 0
+    if args.vm_mode == "port":
+        return _vm_port(args, encoded_name)
+    return 2
+
+
+def _vm_port(args, encoded_name: str) -> int:
+    if args.port_mode == "open":
+        body: dict = {"vm_port": args.vm_port, "persistent": args.persistent}
+        if args.host_port is not None:
+            body["host_port"] = args.host_port
+        forward = _api("POST", f"/api/v1/jetty/vms/{encoded_name}/ports", body)
+        kind = "persistent" if forward["persistent"] else "one-time"
+        print(f"{forward['url']} -> {args.name}:{forward['vm_port']} ({kind})")
+        return 0
+    if args.port_mode == "list":
+        query = f"?vm={encoded_name}" if args.name else ""
+        for forward in _api("GET", f"/api/v1/jetty/ports{query}").get("ports", []):
+            kind = "persistent" if forward["persistent"] else "one-time"
+            line = f"{forward['url']}\t{forward['vm_name']}:{forward['vm_port']}\t{kind}\t{forward['state']}"
+            print(line + (f"\t{forward['error']}" if forward.get("error") else ""))
+        return 0
+    if args.port_mode == "close":
+        _api("DELETE", f"/api/v1/jetty/vms/{encoded_name}/ports/{args.host_port}")
+        print(f"Closed localhost:{args.host_port}")
         return 0
     return 2
 

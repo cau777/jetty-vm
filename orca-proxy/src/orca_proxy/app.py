@@ -11,12 +11,15 @@ from .handlers import requests_api
 from .handlers import rules as rule_handlers
 from .handlers import system as system_handlers
 from .handlers import vms as vm_handlers
+from .jetty import JettyLxd
 from .jobs import JobManager
+from .port_forwards import Connector, PortForwardManager, SshConnector
 
 
 def create_app(
     credential_cache: CredentialCache | None = None,
     daemon_status: dict | None = None,
+    port_forward_connector: Connector | None = None,
 ) -> web.Application:
     """Build the aiohttp application.
 
@@ -27,7 +30,8 @@ def create_app(
 
     `credential_cache` lets the caller share cache state with the interception
     path when both run in one process. It defaults to a fresh instance for
-    standalone development.
+    standalone development. `port_forward_connector` replaces the SSH
+    transport behind Port Forwards in tests.
     """
     app = web.Application(client_max_size=128 * 1024 * 1024, middlewares=[error_middleware])
 
@@ -47,6 +51,10 @@ def create_app(
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
     app["jobs"] = JobManager()
+    app["port_forwards"] = PortForwardManager(
+        conn,
+        port_forward_connector or SshConnector(lambda name, key: JettyLxd(conn).prepare_port_forward(name, key)),
+    )
 
     # The WireGuard keys the tunnel listener uses (tunnel.py). Create them in
     # standalone development as well as in the desktop daemon.
@@ -69,6 +77,10 @@ def create_app(
             web.post("/api/v1/jetty/vms/{name}/exec", jetty_handlers.vm_exec),
             web.post("/api/v1/jetty/vms/{name}/files", jetty_handlers.vm_upload),
             web.post("/api/v1/jetty/vms/{name}/handoff", jetty_handlers.vm_handoff),
+            web.get("/api/v1/jetty/ports", jetty_handlers.list_ports),
+            web.post("/api/v1/jetty/vms/{name}/ports", jetty_handlers.open_port),
+            web.patch("/api/v1/jetty/vms/{name}/ports/{host_port}", jetty_handlers.update_port),
+            web.delete("/api/v1/jetty/vms/{name}/ports/{host_port}", jetty_handlers.close_port),
             web.get("/api/v1/jetty/ssh-config", jetty_handlers.ssh_config),
             web.get("/api/v1/ca", ca_handlers.get_ca),
             web.get("/api/v1/vms", vm_handlers.list_vms),
@@ -89,10 +101,15 @@ def create_app(
         ]
     )
 
+    async def start_port_forwards(_app: web.Application) -> None:
+        app["port_forwards"].start_persistent()
+
     async def close_db(_app: web.Application) -> None:
+        await app["port_forwards"].shutdown()
         await app["jobs"].close()
         conn.close()
         requests_conn.close()
 
+    app.on_startup.append(start_port_forwards)
     app.on_cleanup.append(close_db)
     return app

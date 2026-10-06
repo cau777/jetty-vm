@@ -114,6 +114,44 @@ async def create_vm(request: web.Request) -> web.Response:
 
 async def delete_vm(request: web.Request) -> web.Response:
     await _call(_service(request).delete_vm(request.match_info["name"]))
+    await request.app["port_forwards"].drop_vm(request.match_info["name"])
+    return web.Response(status=204)
+
+
+def _host_port(request: web.Request) -> int:
+    try:
+        return int(request.match_info["host_port"])
+    except ValueError:
+        raise NotFound(f"No port forward on host port {request.match_info['host_port']}") from None
+
+
+async def list_ports(request: web.Request) -> web.Response:
+    return web.json_response({"ports": request.app["port_forwards"].list(request.query.get("vm"))})
+
+
+async def open_port(request: web.Request) -> web.Response:
+    body = await read_json_body(request)
+    reject_unknown_fields(body, {"vm_port", "host_port", "persistent"})
+    forward = request.app["port_forwards"].open(
+        request.match_info["name"],
+        body.get("vm_port"),
+        body.get("host_port"),
+        body.get("persistent", False),
+    )
+    return web.json_response(forward, status=201)
+
+
+async def update_port(request: web.Request) -> web.Response:
+    body = await read_json_body(request)
+    reject_unknown_fields(body, {"persistent"})
+    forward = request.app["port_forwards"].set_persistent(
+        request.match_info["name"], _host_port(request), body.get("persistent")
+    )
+    return web.json_response(forward)
+
+
+async def close_port(request: web.Request) -> web.Response:
+    await request.app["port_forwards"].close(request.match_info["name"], _host_port(request))
     return web.Response(status=204)
 
 

@@ -55,3 +55,7 @@ _Avoid_: Inject rule, Credential rule
 **VM selector**:
 The Rule field that identifies one or more registered VMs, or uses the exclusive `*` wildcard to include every current and future registered VM.
 _Avoid_: Origin, client IP
+
+**Port Forward**:
+A host loopback port tunneled to a port inside one VM, identified by its host port. One-time forwards last until closed or the daemon stops; persistent forwards reopen whenever the daemon starts. A Port Forward is host ingress into a VM and is independent of Rules, which govern VM egress.
+_Avoid_: Port mapping, exposed port

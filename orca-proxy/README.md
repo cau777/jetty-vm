@@ -20,6 +20,14 @@ LXD operations use its local Unix-socket REST API. Jetty manages the gateway,
 agent VMs, and the generated `~/.ssh/jetty_config` fragment. Local membership
 in the `lxd` group is root-equivalent on the host.
 
+Port Forwards expose a VM port on the host's `127.0.0.1`, for example a dev
+server. The daemon supervises an `ssh -N -L` per forward through the gateway's
+per-VM SSH port, so services bound to the VM's localhost are reachable too. It
+uses its own key in `~/.orca-proxy/port-forwards/`, authorized on the VM and
+checked against the VM's host key over the LXD socket. One-time forwards last
+until closed or the daemon stops; persistent ones are stored and reopen when
+the daemon starts. Deleting a VM removes its forwards.
+
 ## CLI
 
 ```bash
@@ -28,6 +36,10 @@ jetty gateway setup
 jetty vm create my-agent --cpus 4 --memory 8GiB --disk 40GiB
 jetty vm exec my-agent -- uname -a
 jetty vm upload my-agent /home/ubuntu/setup.sh --file ./setup.sh
+jetty vm port open my-agent 5173                 # one-time, localhost:5173
+jetty vm port open my-agent 8000 --host-port 18000 --persistent
+jetty vm port list
+jetty vm port close my-agent 5173
 ```
 
 Run `jetty --help` and `jetty vm --help` for the other lifecycle operations.
