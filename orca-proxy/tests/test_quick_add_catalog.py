@@ -19,7 +19,7 @@ from orca_proxy import validation
 from orca_proxy.errors import ValidationFailed
 from orca_proxy.handlers.credentials import _validate_command, _validate_ttl_seconds
 
-CATALOG_PATH = Path(__file__).parent.parent / "src/orca_proxy/static/quick-add-catalog.json"
+CATALOG_PATH = Path(__file__).parent.parent / "src/orca_proxy/resources/quick-add-catalog.json"
 PYPROJECT_PATH = Path(__file__).parent.parent / "pyproject.toml"
 
 

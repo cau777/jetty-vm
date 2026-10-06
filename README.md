@@ -118,7 +118,6 @@ not a general-purpose network sandbox or a substitute for reviewing the
 permissions you grant in each rule. Keep rules specific to the VM, hostname,
 path, and operation the agent needs.
 
-On Ubuntu hosts that restrict unprivileged user namespaces, Jetty disables
-QtWebEngine's renderer sandbox so the management window can start. That window
-only loads Jetty's loopback management UI; the tray opens other links in the
-system browser.
+The desktop manager is a native PySide6 Qt Quick application. It keeps its
+loopback API in the separate daemon process, so a desktop UI failure does not
+stop VM web egress.

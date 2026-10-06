@@ -1,6 +1,6 @@
 """Tests for the Claude/Codex OAuth-refresh Credential commands.
 
-The catalog (`static/quick-add-catalog.json`) is the source of truth for
+The catalog (`resources/quick-add-catalog.json`) is the source of truth for
 these commands -- there is no separate Python implementation to test
 instead. Each test loads the actual command string for a given key and runs
 it through the real `CredentialCache` execution path (`bash -lc`, same as
@@ -18,7 +18,7 @@ import pytest
 
 from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError
 
-CATALOG_PATH = Path(__file__).parent.parent / "src/orca_proxy/static/quick-add-catalog.json"
+CATALOG_PATH = Path(__file__).parent.parent / "src/orca_proxy/resources/quick-add-catalog.json"
 
 
 def _catalog_command(key: str) -> str:

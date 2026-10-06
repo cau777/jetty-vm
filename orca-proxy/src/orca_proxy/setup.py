@@ -168,9 +168,9 @@ def _install_gh_helper() -> None:
 
 def _install_catalog() -> None:
     if getattr(sys, "frozen", False):
-        source = Path(getattr(sys, "_MEIPASS")) / "orca_proxy" / "static" / "quick-add-catalog.json"
+        source = Path(getattr(sys, "_MEIPASS")) / "orca_proxy" / "resources" / "quick-add-catalog.json"
     else:
-        source = Path(__file__).resolve().parent / "static" / "quick-add-catalog.json"
+        source = Path(__file__).resolve().parent / "resources" / "quick-add-catalog.json"
     target = Path.home() / ".local/share/jetty/quick-add-catalog.json"
     _copy_asset_if_present(source, target)
 

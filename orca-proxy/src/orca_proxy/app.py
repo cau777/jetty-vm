@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from aiohttp import web
 
 from . import ca, config, db, request_log, tunnel
@@ -13,6 +11,7 @@ from .handlers import requests_api
 from .handlers import rules as rule_handlers
 from .handlers import system as system_handlers
 from .handlers import vms as vm_handlers
+from .jobs import JobManager
 
 
 def create_app(
@@ -47,6 +46,7 @@ def create_app(
 
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
+    app["jobs"] = JobManager()
 
     # The WireGuard keys the tunnel listener uses (tunnel.py). Create them in
     # standalone development as well as in the desktop daemon.
@@ -61,6 +61,7 @@ def create_app(
             web.get("/api/v1/status", system_handlers.status),
             web.get("/api/v1/jetty/status", jetty_handlers.status),
             web.post("/api/v1/jetty/setup", jetty_handlers.setup),
+            web.get("/api/v1/jetty/jobs/{job_id}", jetty_handlers.get_job),
             web.get("/api/v1/jetty/vms", jetty_handlers.list_vms),
             web.post("/api/v1/jetty/vms", jetty_handlers.create_vm),
             web.delete("/api/v1/jetty/vms/{name}", jetty_handlers.delete_vm),
@@ -87,24 +88,8 @@ def create_app(
         ]
     )
 
-    # Web UI (#15): dependency-free static assets, served directly (no
-    # build step, no separate frontend server) — the same aiohttp process
-    # already serving the Management API. index.html's relative
-    # <link>/<script> paths and app.js's relative fetch() calls all resolve
-    # against "/", so the whole directory is mounted there.
-    static_dir = Path(__file__).parent / "static"
-
-    async def index(_request: web.Request) -> web.FileResponse:
-        return web.FileResponse(static_dir / "index.html")
-
-    async def setup_page(_request: web.Request) -> web.FileResponse:
-        return web.FileResponse(static_dir / "setup.html")
-
-    app.router.add_get("/", index)
-    app.router.add_get("/setup", setup_page)
-    app.router.add_static("/", static_dir, name="static")
-
     async def close_db(_app: web.Application) -> None:
+        await app["jobs"].close()
         conn.close()
         requests_conn.close()
 

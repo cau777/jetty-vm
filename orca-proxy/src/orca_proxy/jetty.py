@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from . import ca, config, validation
@@ -167,11 +167,21 @@ class JettyLxd:
             result["message"] = str(exc)
         return result
 
-    async def setup(self, ssh_key: str | None = None) -> dict[str, Any]:
+    async def setup(
+        self,
+        ssh_key: str | None = None,
+        *,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        report = progress or (lambda _step: None)
+        report("validate")
         ssh_key = _validate_ssh_key(ssh_key) if ssh_key else default_ssh_key()
         async with LxdClient() as client:
+            report("project")
             await self._ensure_project(client)
+            report("profile")
             await self._ensure_profile(client)
+            report("networks")
             await self._ensure_network(
                 client,
                 UP_NET,
@@ -185,6 +195,7 @@ class JettyLxd:
 
             gateway = await self._instance(client, GATEWAY)
             if gateway is None:
+                report("instance")
                 user_data = _cloud_config(ssh_key, packages=["wireguard-tools", "iptables"])
                 await client.request(
                     "POST",
@@ -206,11 +217,16 @@ class JettyLxd:
                         },
                     },
                 )
+            report("start")
             await self._start(client, GATEWAY)
+            report("guest_agent")
             await self._wait_for_agent(client, GATEWAY)
+            report("cloud_init")
             result = await client.execute(GATEWAY, ["cloud-init", "status", "--wait"])
             _require_success(result, ["cloud-init", "status", "--wait"], GATEWAY)
+            report("configure")
             await self._configure_gateway(client)
+        report("ssh_config")
         await self._sync_ssh_config()
         return {"gateway": GATEWAY, "state": "ready"}
 
@@ -223,7 +239,10 @@ class JettyLxd:
         disk: str = "40GiB",
         image: str = AGENT_IMAGE,
         ssh_key: str | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        report = progress or (lambda _step: None)
+        report("validate")
         name = validation.validate_name(name)
         if name == GATEWAY:
             raise ValidationFailed("The gateway name is reserved", fields={"name": "reserved"})
@@ -251,6 +270,8 @@ class JettyLxd:
             if ca_row is None:
                 raise LxdError("Jetty's interception CA is not initialized")
             mac = ":".join(["00", "16", "3e", *(f"{byte:02x}" for byte in secrets.token_bytes(3))])
+            # LXD pulls the requested image as part of the instance creation operation.
+            report("instance")
             await client.request(
                 "POST",
                 "/1.0/instances",
@@ -282,12 +303,17 @@ class JettyLxd:
                     },
                 },
             )
+            report("register")
             vms_repo.put(self.db, name, ip)
             await self._sync_ssh_config()
+            report("start")
             await self._start(client, name)
+            report("guest_agent")
             await self._wait_for_agent(client, name)
+            report("cloud_init")
             cloud_init = await client.execute(name, ["cloud-init", "status", "--wait"])
             _require_success(cloud_init, ["cloud-init", "status", "--wait"], name)
+            report("ready")
             instance = await self._instance(client, name)
             result = {"name": name, "ip_address": ip, "status": (instance or {}).get("status", "Running")}
         return result

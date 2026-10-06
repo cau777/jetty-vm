@@ -1,94 +1,47 @@
-"""Desktop tray process and embedded management window."""
+"""Native Qt Quick desktop window and system tray process."""
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-import urllib.error
-import urllib.request
-
-from . import config
-
-
-def _status() -> dict:
-    base = f"http://127.0.0.1:{config.management_api_port()}"
-    request = urllib.request.Request(f"{base}/api/v1/status")
-    try:
-        with urllib.request.urlopen(request, timeout=1.5) as response:
-            result = json.loads(response.read())
-        try:
-            with urllib.request.urlopen(f"{base}/readyz", timeout=1.5) as response:
-                readiness = json.loads(response.read())
-        except (OSError, urllib.error.URLError, json.JSONDecodeError):
-            readiness = {"ready": False}
-        result["ready"] = bool(readiness.get("ready"))
-        return result
-    except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return {"state": "failed", "ready": False, "proxy_error": "Jetty daemon is unreachable."}
-
 
 def main() -> int:
-    restriction = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
     try:
-        if restriction.read_text(encoding="ascii").strip() == "1":
-            # QtWebEngine cannot use its namespace sandbox under this Ubuntu
-            # setting; the embedded page is restricted to Jetty's loopback UI.
-            os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
-    except OSError:
-        pass
-    try:
-        from PySide6.QtCore import QTimer, QUrl
-        from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPixmap
-        from PySide6.QtWidgets import (
-            QApplication,
-            QDialog,
-            QMainWindow,
-            QMenu,
-            QPlainTextEdit,
-            QSystemTrayIcon,
-            QVBoxLayout,
-        )
-        from PySide6.QtWebEngineCore import QWebEnginePage
-        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+        from PySide6.QtQml import QQmlApplicationEngine
+        from PySide6.QtQuickControls2 import QQuickStyle
+        from PySide6.QtWidgets import QApplication, QDialog, QMenu, QPlainTextEdit, QSystemTrayIcon, QVBoxLayout
+        from .desktop import DesktopBackend
     except ImportError as exc:
         print(f"Jetty's desktop dependencies are unavailable: {exc}", file=sys.stderr)
         return 1
 
-    class JettyPage(QWebEnginePage):
-        def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
-            del navigation_type
-            if (
-                url.scheme() == "http"
-                and url.host() in {"127.0.0.1", "localhost"}
-                and url.port() == config.management_api_port()
-            ):
-                return True
-            QDesktopServices.openUrl(url)
-            return False
-
-    class JettyWindow(QMainWindow):
-        def __init__(self):
-            super().__init__()
-            self.setWindowTitle("Jetty")
-            self.resize(1200, 800)
-            self.view = QWebEngineView(self)
-            self.view.setPage(JettyPage(self.view))
-            self.setCentralWidget(self.view)
-            self.open_url("/")
-
-        def open_url(self, path: str):
-            self.view.setUrl(QUrl(f"http://127.0.0.1:{config.management_api_port()}{path}"))
-            self.show()
-            self.raise_()
-            self.activateWindow()
-
+    QQuickStyle.setStyle("Material")
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Jetty")
+    app.setOrganizationName("Jetty")
     app.setQuitOnLastWindowClosed(False)
-    window = JettyWindow()
+
+    backend = DesktopBackend(force_setup=os.environ.get("JETTY_OPEN_SETUP") == "1")
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("backend", backend)
+    qml_path = Path(__file__).parent / "qml" / "Main.qml"
+    engine.load(str(qml_path))
+    if not engine.rootObjects():
+        print(f"Could not load Jetty's native UI from {qml_path}.", file=sys.stderr)
+        return 1
+    window = engine.rootObjects()[0]
+
+    def show_window():
+        window.show()
+        window.raise_()
+        window.requestActivate()
+
+    def show_setup():
+        backend.showSetup()
+        show_window()
 
     def make_icon(color: str) -> QIcon:
         pixmap = QPixmap(32, 32)
@@ -105,15 +58,14 @@ def main() -> int:
 
     tray = QSystemTrayIcon(make_icon("#97a6ba"), app)
     menu = QMenu()
-    # Owned by the app, not the menu: refresh() calls menu.clear(), which
-    # deletes any action the menu owns.
+    # Keep actions owned by QApplication: menu.clear() deletes menu-owned actions.
     open_action = QAction("Open Jetty", app)
     setup_action = QAction("Open setup", app)
     restart_action = QAction("Restart proxy", app)
     logs_action = QAction("Show logs", app)
     quit_action = QAction("Quit tray", app)
-    open_action.triggered.connect(lambda: window.open_url("/"))
-    setup_action.triggered.connect(lambda: window.open_url("/setup"))
+    open_action.triggered.connect(show_window)
+    setup_action.triggered.connect(show_setup)
     restart_action.triggered.connect(
         lambda: subprocess.Popen(
             ["systemctl", "--user", "restart", "jetty-daemon.service"],
@@ -142,49 +94,43 @@ def main() -> int:
     logs_action.triggered.connect(show_logs)
     quit_action.triggered.connect(lambda: (tray.hide(), app.quit()))
 
-    def refresh():
-        current = _status()
-        state = current.get("state")
-        if state == "running" and current.get("ready"):
-            icon = make_icon("#21b66f")
+    def refresh_menu():
+        if backend.systemState == "running" and backend.ready:
+            color = "#21b66f"
             tooltip = "Jetty proxy is running"
-            menu.clear()
-            menu.addAction(open_action)
-            menu.addSeparator()
-            menu.addAction(quit_action)
-        elif state in {"not_configured", "waiting_for_network"}:
-            icon = make_icon("#97a6ba")
-            tooltip = "Jetty needs setup" if state == "not_configured" else "Jetty is waiting for its network"
-            menu.clear()
-            menu.addAction(setup_action)
-            menu.addAction(open_action)
-            menu.addSeparator()
-            menu.addAction(quit_action)
+            actions = [open_action, None, quit_action]
+        elif backend.needsSetup:
+            color = "#97a6ba"
+            tooltip = "Jetty needs setup" if backend.systemState == "not_configured" else "Jetty is waiting for its network"
+            actions = [setup_action, open_action, None, quit_action]
         else:
-            icon = make_icon("#df4c59")
-            tooltip = current.get("proxy_error") or "Jetty proxy is unavailable"
-            menu.clear()
-            menu.addAction(restart_action)
-            menu.addAction(logs_action)
-            menu.addAction(open_action)
-            menu.addSeparator()
-            menu.addAction(quit_action)
-        tray.setIcon(icon)
+            color = "#df4c59"
+            tooltip = backend.statusMessage or "Jetty proxy is unavailable"
+            actions = [restart_action, logs_action, open_action, None, quit_action]
+        menu.clear()
+        for action in actions:
+            if action is None:
+                menu.addSeparator()
+            else:
+                menu.addAction(action)
+        tray.setIcon(make_icon(color))
         tray.setToolTip(tooltip[:127])
 
+    backend.statusChanged.connect(refresh_menu)
     menu.addAction(open_action)
     tray.setContextMenu(menu)
-    tray.activated.connect(lambda reason: window.open_url("/") if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
-    refresh()
-    timer = QTimer(app)
-    timer.timeout.connect(refresh)
-    timer.start(3000)
+    tray.activated.connect(
+        lambda reason: show_window()
+        if reason == QSystemTrayIcon.ActivationReason.Trigger
+        else None
+    )
+    refresh_menu()
 
     if QSystemTrayIcon.isSystemTrayAvailable():
         tray.show()
     else:
-        # A .desktop launcher remains available even on sessions with no SNI host.
-        window.show()
+        # Keep the management window accessible when the desktop has no SNI host.
+        show_window()
     if os.environ.get("JETTY_OPEN_SETUP") == "1":
-        window.open_url("/setup")
+        show_setup()
     return app.exec()
