@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -266,8 +267,52 @@ def _update() -> int:
     finally:
         temp.unlink(missing_ok=True)
     subprocess.run(["systemctl", "--user", "restart", "jetty-daemon.service"], check=False)
-    print(f"Updated Jetty to {tag}. The tray refreshes after you reopen it.")
+    if _restart_tray(target):
+        print(f"Updated Jetty to {tag} and restarted the tray.")
+    else:
+        print(f"Updated Jetty to {tag}.")
     return 0
+
+
+def _tray_pids(proc: Path = Path("/proc")) -> list[int]:
+    """Find this user's `jetty tray` processes, including the AppImage runtime wrapping each one."""
+    pids = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if entry.stat().st_uid != os.getuid():
+                continue
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if len(argv) >= 2 and argv[1] == b"tray" and Path(os.fsdecode(argv[0])).name == "jetty":
+            pids.append(int(entry.name))
+    return pids
+
+
+def _restart_tray(target: Path) -> bool:
+    """Replace a running tray with the updated binary; the old one keeps the previous UI loaded."""
+    pids = _tray_pids()
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(Path(f"/proc/{pid}").exists() for pid in pids):
+        time.sleep(0.1)
+    subprocess.Popen(
+        [str(target), "tray"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
