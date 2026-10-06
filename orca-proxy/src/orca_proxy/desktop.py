@@ -554,7 +554,7 @@ class DesktopBackend(QObject):
             if not ok:
                 self._notify(str(result.get("message", "Credential refresh failed.")), "danger")
                 return
-            self._notify(f"{name} will be regenerated on its next request.", "success")
+            self._notify(f"{name} cache cleared; it regenerates on its next request.", "success")
             self.refresh()
 
         self._request("POST", f"/api/v1/credentials/{encoded}/refresh", callback=complete)

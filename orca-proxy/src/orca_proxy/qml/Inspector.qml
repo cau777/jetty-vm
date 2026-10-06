@@ -101,7 +101,7 @@ Pane {
                 Label { Layout.fillWidth: true; text: root.backend.selection.failure_category ? "Last failure: " + root.backend.selection.failure_category : root.backend.selection.last_success_at ? "Last success: " + root.backend.selection.last_success_at : "No cached credential value"; color: "#8793a5"; wrapMode: Text.Wrap; font.pixelSize: 11 }
                 RowLayout {
                     JettyButton { text: "Edit"; flat: true; onClicked: root.backend.openEditor("credentials", root.backend.selection.name) }
-                    JettyButton { text: "Refresh"; flat: true; onClicked: root.backend.refreshCredential(root.backend.selection.name) }
+                    JettyButton { text: "Clear cache"; flat: true; onClicked: root.backend.refreshCredential(root.backend.selection.name) }
                     JettyButton { text: "Delete"; destructive: true; onClicked: root.confirmationRequested("credentials", root.backend.selection.name, "delete") }
                 }
                 Label { Layout.fillWidth: true; text: "Credential values and command output are never shown here."; color: "#8793a5"; wrapMode: Text.Wrap; font.pixelSize: 11 }
