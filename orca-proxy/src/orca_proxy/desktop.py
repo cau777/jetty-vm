@@ -547,6 +547,19 @@ class DesktopBackend(QObject):
         self._request("DELETE", f"/api/v1/{kind}/{encoded}", callback=complete)
 
     @Slot(str)
+    def refreshCredential(self, name: str) -> None:
+        encoded = urllib.parse.quote(name, safe="")
+
+        def complete(ok, result):
+            if not ok:
+                self._notify(str(result.get("message", "Credential refresh failed.")), "danger")
+                return
+            self._notify(f"{name} will be regenerated on its next request.", "success")
+            self.refresh()
+
+        self._request("POST", f"/api/v1/credentials/{encoded}/refresh", callback=complete)
+
+    @Slot(str)
     def deleteVm(self, name: str) -> None:
         encoded = urllib.parse.quote(name, safe="")
 

@@ -79,6 +79,7 @@ def create_app(
             web.get("/api/v1/credentials/{name}", credential_handlers.get_credential),
             web.put("/api/v1/credentials/{name}", credential_handlers.put_credential),
             web.delete("/api/v1/credentials/{name}", credential_handlers.delete_credential),
+            web.post("/api/v1/credentials/{name}/refresh", credential_handlers.refresh_credential),
             web.get("/api/v1/rules", rule_handlers.list_rules),
             web.get("/api/v1/rules/{name}", rule_handlers.get_rule),
             web.put("/api/v1/rules/{name}", rule_handlers.put_rule),

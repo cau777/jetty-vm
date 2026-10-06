@@ -74,3 +74,25 @@ async def test_list_credentials_sorted_by_name(client):
     resp = await client.get("/api/v1/credentials")
     body = await resp.json()
     assert [c["name"] for c in body["credentials"]] == ["alpha", "zeta"]
+
+
+async def test_refresh_credential_forgets_cached_value_without_running_command(app, client, tmp_path):
+    marker = tmp_path / "runs"
+    command = f"echo run >> {marker}; echo token-$(wc -l < {marker})"
+    await client.put("/api/v1/credentials/github-host-login", json={"command": command, "ttl_seconds": 300})
+    cache = app["credential_cache"]
+    assert await cache.get_value("github-host-login", command, 300) == "token-1"
+
+    resp = await client.post("/api/v1/credentials/github-host-login/refresh")
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["status"] == "empty"
+    assert "value" not in body
+    assert marker.read_text().count("run") == 1
+
+    assert await cache.get_value("github-host-login", command, 300) == "token-2"
+
+
+async def test_refresh_unknown_credential_returns_not_found(client):
+    resp = await client.post("/api/v1/credentials/missing/refresh")
+    assert resp.status == 404

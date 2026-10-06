@@ -71,6 +71,18 @@ async def put_credential(request: web.Request) -> web.Response:
     return web.json_response(_serialize(row, _cache(request)), status=status)
 
 
+async def refresh_credential(request: web.Request) -> web.Response:
+    conn = db_conn(request)
+    name = request.match_info["name"]
+    row = credentials_repo.get(conn, name)
+    if row is None:
+        raise NotFound(f"Credential '{name}' not found")
+    # Forget the cached value without executing the command; the next
+    # intercepted request that needs it regenerates it.
+    _cache(request).invalidate(name)
+    return web.json_response(_serialize(row, _cache(request)))
+
+
 async def delete_credential(request: web.Request) -> web.Response:
     conn = db_conn(request)
     name = request.match_info["name"]

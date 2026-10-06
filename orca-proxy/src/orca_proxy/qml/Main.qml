@@ -33,7 +33,6 @@ ApplicationWindow {
     function rowSecondary(row) {
         if (backend.activeView === "logs") return row.vm_name + " · " + row.destination_port + " · " + String(row.started_at || "").replace("T", " ").slice(0, 19)
         if (backend.activeView === "rules") return row.hostname + " · " + (row.vm_selector && row.vm_selector.type === "all" ? "all VMs" : (row.vm_selector && row.vm_selector.vms || []).join(", "))
-        if (backend.activeView === "credentials") return row.command
         return row.ip_address || "No IP address"
     }
     function rowStatus(row) {
@@ -163,7 +162,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.margins: 14
                                 Label { text: backend.activeView === "logs" ? "DESTINATION" : "NAME"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 220 }
-                                Label { text: backend.activeView === "logs" ? "VM · PORT · TIME" : backend.activeView === "rules" ? "HOST · VM SELECTOR" : backend.activeView === "credentials" ? "PROVIDER COMMAND" : "IP ADDRESS"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 260 }
+                                Label { visible: backend.activeView !== "credentials"; text: backend.activeView === "logs" ? "VM · PORT · TIME" : backend.activeView === "rules" ? "HOST · VM SELECTOR" : "IP ADDRESS"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 260 }
                                 Label { text: backend.activeView === "rules" ? "ACTION" : backend.activeView === "credentials" ? "LIVE STATUS" : backend.activeView === "vms" ? "STATUS" : "DECISION"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.preferredWidth: 112 }
                             }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544" }
@@ -185,7 +184,7 @@ ApplicationWindow {
                                     contentItem: RowLayout {
                                         spacing: 12
                                         Label { Layout.fillWidth: true; Layout.preferredWidth: 220; text: root.rowPrimary(rowDelegate.item); color: "#edf2f7"; font.bold: true; elide: Text.ElideRight }
-                                        Label { Layout.fillWidth: true; Layout.preferredWidth: 260; text: root.rowSecondary(rowDelegate.item); color: "#8793a5"; font.pixelSize: 11; elide: Text.ElideRight; font.family: backend.activeView === "credentials" || backend.activeView === "vms" ? "monospace" : "" }
+                                        Label { visible: backend.activeView !== "credentials"; Layout.fillWidth: true; Layout.preferredWidth: 260; text: root.rowSecondary(rowDelegate.item); color: "#8793a5"; font.pixelSize: 11; elide: Text.ElideRight; font.family: backend.activeView === "vms" ? "monospace" : "" }
                                         Label { Layout.preferredWidth: 112; text: root.rowStatus(rowDelegate.item); color: root.rowTone(rowDelegate.item); font.pixelSize: 11; elide: Text.ElideRight }
                                     }
                                 }

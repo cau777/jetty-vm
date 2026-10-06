@@ -98,6 +98,7 @@ GET    /api/v1/credentials
 GET    /api/v1/credentials/{name}
 PUT    /api/v1/credentials/{name}
 DELETE /api/v1/credentials/{name}  -> 409 if referenced by a Rule
+POST   /api/v1/credentials/{name}/refresh  -> forget the cached value
 
 GET    /api/v1/rules
 GET    /api/v1/rules/{name}
@@ -306,13 +307,13 @@ single-flight:
   categories: `exit` | `timeout` | `invalid_output` (`CredentialExecutionError.category`).
   A failed Credential makes the proxy respond `502 credential_unavailable`
   (fail-closed — no request ever proceeds with a missing/expired injection).
-- `invalidate()` (called on Credential `PUT`/`DELETE`) clears cached state
+- `invalidate()` (called on Credential `PUT`/`DELETE` and refresh) clears cached state
   *and* actively kills any in-flight execution via `os.killpg` — this turns
   an in-flight execution's eventual outcome into a failure rather than a
   stale success reaching an already-waiting caller.
-- No refresh/test/cache-clear Management API operations exist in v1 — the
-  only way to force a re-execution is to `PUT` the Credential again (which
-  invalidates) or wait out the TTL.
+- `POST /api/v1/credentials/{name}/refresh` invalidates the cached value
+  without executing the command; the next request that needs the Credential
+  regenerates it. There is no test operation that runs the command on demand.
 - `GET /api/v1/credentials/{name}` exposes only safe ephemeral status —
   `status` (`empty`/`refreshing`/`valid`/`error`), `expires_at`,
   `last_success_at`, `last_failure_at`, `failure_category` — never the value,

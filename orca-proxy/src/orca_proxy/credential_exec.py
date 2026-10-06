@@ -4,8 +4,8 @@ Each Credential is a trusted bash command whose stdout becomes a validated
 Credential Value, TTL-cached only in memory. This module owns execution,
 output validation, single-flight concurrency, and cache invalidation — never
 persistence (the command string itself lives in SQLite, per repo/credentials.py)
-and never HTTP exposure of the value (per #10: "Do not add refresh, test, or
-cache-clear Management API operations in v1").
+and never HTTP exposure of the value. The only cache operation the Management
+API exposes is a refresh that forgets the value without running the command.
 """
 
 import asyncio
