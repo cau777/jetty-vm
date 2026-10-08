@@ -329,9 +329,21 @@ before installation; use a separate harness runtime when necessary:
   sudo apt-get install -y -qq nodejs
 '
 # then, per harness requested:
-"$JETTY" vm exec <vm-name> -- sudo npm install -g @openai/codex
-"$JETTY" vm exec <vm-name> -- sudo npm install -g @anthropic-ai/claude-code
+"$JETTY" vm exec <vm-name> -- bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+"$JETTY" vm exec <vm-name> -- bash -lc '
+  npm config set prefix ~/.npm-global
+  grep -q npm-global ~/.profile || echo "export PATH=\"\$HOME/.npm-global/bin:\$PATH\"" >> ~/.profile
+  export PATH="$HOME/.npm-global/bin:$PATH"
+  npm install -g @openai/codex
+'
 ```
+
+Install both harnesses as `ubuntu`, never with `sudo`: a root-owned install
+can't auto-update. Claude Code's native installer lands in `~/.local/bin`,
+and Codex goes under a user-owned npm prefix so its updater's
+`npm install -g` works. Both directories reach `PATH` through `~/.profile`,
+so call them via `bash -lc`. On an existing VM with root-owned copies, remove
+those first with `sudo npm uninstall -g @anthropic-ai/claude-code @openai/codex`.
 
 Write each instructions file below by uploading it, e.g.
 `printf '%s\n' "$NOTE" | "$JETTY" vm upload <vm-name> /home/ubuntu/.claude/CLAUDE.md`.
