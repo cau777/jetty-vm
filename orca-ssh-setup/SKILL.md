@@ -20,9 +20,16 @@ proxy configuration inside the VM), and
 the user knows exactly what to click/type in Orca to register it and start a
 worktree on it.
 
-Work through the steps below in order. Do not skip step 2 — guessing at VM
-sizing, base image, harness choice, or naming instead of confirming with the
-user is the most common way this goes wrong.
+For a Jetty app handoff, the VM already exists. Use the supplied name and
+`JETTY_CLI`, confirm it with `jetty vm list`, and inspect its installed tools
+before changing it. Keep its name, image, resources, and existing configuration.
+The host agent chosen in Jetty is the provisioning agent; it does not imply
+that the same harness should be installed inside the VM.
+
+Work through the steps below, asking only for choices that remain unresolved.
+For a new VM, settle its name, resources, and image before creation. Configure
+credentials, Rules, and guest authentication in step 6 before cloning a private
+repository or installing dependencies that require those credentials.
 
 ## 1. Inspect the current repo to determine required technologies
 
@@ -50,20 +57,22 @@ services, anything unusual) before moving to step 2.
 
 ## 2. Clarify open questions with the user
 
-Do not assume. Confirm at minimum:
+Use the request and existing setup to settle these choices; ask the user only
+for missing information:
 
 - **Project/VM name** — propose one derived from the repo directory name
   (kebab-case, e.g. `orca-<reponame>`), but let the user override it.
 - **VM resources** — default proposal: 4 CPUs, 8GB RAM, 40GB disk. Ask if the
   workload (large builds, ML training, big monorepo) needs more.
-- **Base Ubuntu image** — default to the latest LTS (`ubuntu:24.04`) unless
+- **Base Ubuntu image** — Jetty currently defaults to `ubuntu:24.04`; use that unless
   the repo needs a specific OS version.
 - **Which coding-agent harness(es) to install** — Codex CLI (`@openai/codex`),
   Claude Code (`@anthropic-ai/claude-code`), both, or neither. This decides
-  what step 4 installs and whether steps 3/6 (orca-proxy) run at all. Default
-  to asking rather than assuming both, since step 3 needs an explicit
-  one-time interactive login per harness the user actually wants
-  credentialed.
+  what step 4 installs and which credential subsections of steps 3/6 apply.
+  Reuse an explicit choice in the request; otherwise ask. The shipped
+  credential catalog covers Codex and Claude Code subscriptions. Pi or
+  OpenCode as the host provisioning agent does not supply a guest inference
+  credential; establish the requested guest provider and auth method separately.
 - **Whether the VM needs GitHub access** (cloning, pushing, opening
   PRs/issues via `git`/`gh`) — and if so, **which repo(s)/org(s)** and
   **which operations** (read-only clone/PR/issue-read, or also push and
@@ -82,7 +91,8 @@ Do not assume. Confirm at minimum:
   project needs any of that, stop and tell the user rather than working
   around it.
 
-Only proceed to provisioning once these are settled.
+For an app-created VM, skip the name, resources, and image questions. Proceed
+with independent configuration while any remaining choices are pending.
 
 ## 3. Set up the host-side orca-proxy service and register Credentials
 
@@ -106,15 +116,20 @@ command and starts a per-user daemon. Set its loopback Management API URL:
 
 ```bash
 JETTY="${JETTY_CLI:-$HOME/.local/bin/jetty}"
-API="http://127.0.0.1:8080/api/v1"
+JETTY_BASE_URL="${JETTY_MANAGEMENT_URL:-http://127.0.0.1:${ORCA_PROXY_MANAGEMENT_PORT:-8080}}"
+API="${JETTY_BASE_URL%/}/api/v1"
 JETTY_TOOLS_DIR="$HOME/.local/share/jetty"
-curl -fsS "${API%/api/v1}/readyz"
+"$JETTY" status
+curl -sS "${API%/api/v1}/readyz"
 ```
 
 Use these variables in each shell that runs the remaining commands.
 
-The Management API is available before gateway setup. `/readyz` remains
-unready until Jetty's network exists and the proxy listener is running.
+The Management API is available before gateway setup. `/readyz` returns 503
+with check details until the proxy listener and its prerequisites are ready;
+this alone does not mean the daemon is missing. Gateway health and tunnel
+handshakes are reported separately by `jetty status`. If a custom daemon port
+is in use, set `JETTY_MANAGEMENT_URL` to that loopback URL for the CLI too.
 
 **3b. If the Jetty daemon is missing**, stop and hand the user these
 installation commands. They run as the desktop user:
@@ -134,7 +149,7 @@ lingering user manager receives the new group membership.
 
 **3c. Ensure the needed Credentials exist.** Credential creation is a plain
 `PUT` the Provisioning Agent issues directly — it is not gated behind the
-Web UI's Quick Add button, which is a human convenience layered on the same
+desktop UI's Quick Add button, which is a human convenience layered on the same
 Management API, not a separate mechanism. Read the source-of-truth catalog
 (the same file Quick Add and the compatibility tests both load) rather than
 hardcoding command strings here:
@@ -143,8 +158,20 @@ hardcoding command strings here:
 CATALOG="$JETTY_TOOLS_DIR/quick-add-catalog.json"
 
 put_credential() {
-  local key="$1" entry command ttl
+  local key="$1" entry command ttl existing
+  local credential_list
   entry=$(jq -c --arg k "$key" '.[] | select(.key == $k)' "$CATALOG")
+  if [ -z "$entry" ]; then
+    echo "Credential template not found: $key" >&2
+    return 1
+  fi
+  # List first so a missing credential is distinct from an API failure.
+  credential_list=$(curl -fsS "$API/credentials") || return
+  existing=$(printf '%s\n' "$credential_list" | jq -c --arg k "$key" '.credentials[] | select(.name == $k)') || return
+  if [ -n "$existing" ]; then
+    echo "Reusing existing Credential: $key"
+    return 0
+  fi
   command=$(echo "$entry" | jq -r .command)
   ttl=$(echo "$entry" | jq -r .ttl_seconds)
   curl -fsS -X PUT "$API/credentials/${key}" \
@@ -158,9 +185,10 @@ put_credential codex-subscription      # if Codex was requested
 put_credential claude-code-subscription # if Claude Code was requested
 ```
 
-This is idempotent — safe to rerun on every project's setup; it never
-touches the live cached value (per the Credential execution engine), only
-the command string and TTL.
+Reuse existing Credentials, including user-customized commands. Every successful
+Credential `PUT`, even with identical settings, invalidates the cached value
+and cancels in-flight execution. Update an existing definition only when that
+change is needed and authorized. GET/list expose status, never secret values.
 
 The Claude Code and Codex Credentials refresh the host's own logins
 (`~/.claude/.credentials.json`, `~/.codex/auth.json`), and that rotates the
@@ -188,9 +216,12 @@ Hand the user the exact command for whichever Credential is in `error`
 - `claude-code-subscription` → run `claude` and log in (on the **host**)
 - `codex-subscription` → `codex login` (on the **host**)
 
-Tell the user this only needs to happen **once per machine, ever** — not per
-project, not per rebuild. Credential Values are picked up live on the next
-request; no restart needed after login.
+Host logins are shared across projects and VM rebuilds. The user may need to
+log in again if a session expires or is revoked. Credential Values are picked up live on the next
+request; no restart needed after login. If a Credential remains in `error` after a
+successful host login, invalidate it with
+`POST "$API/credentials/<name>/refresh"` and retry the actual request; refresh
+clears the cache without executing the command immediately.
 
 ## 4. Create a properly named LXD VM
 
@@ -203,7 +234,9 @@ If the user created the VM in the Jetty app (Jetty's handoff prompt says
 so), do not create another one. Confirm it with `"$JETTY" vm list`, skip the
 name, sizing and image questions in step 2, and skip `vm create` below.
 
-All VM lifecycle goes through the Jetty app's loopback API:
+All VM lifecycle goes through Jetty. For an existing VM with a healthy
+gateway, skip `gateway setup`; it reapplies shared networking configuration.
+Use it when the gateway is missing or needs repair:
 
 ```bash
 "$JETTY" gateway setup     # creates the LXD project, networks and gateway VM
@@ -262,7 +295,8 @@ and re-add it under **Settings → SSH**, or use its "reconnect" action if one
 is shown) so it retries the `node-pty` build against the now-present
 toolchain; no VM or sshd restart is needed.
 
-Then clone the repo into the VM. Prefer cloning fresh inside the VM over a
+Defer the clone and dependency install until step 6 has configured any required
+GitHub or registry access. After that, clone the repo into the VM. Prefer cloning fresh inside the VM over a
 live host mount, since Orca agents will run natively inside the VM and a real
 git checkout avoids filesystem-passthrough edge cases:
 
@@ -275,18 +309,19 @@ argument — `jetty vm exec` does not itself invoke a shell, so an unquoted
 `~` gets expanded by the *host's* shell first, producing a path under the
 host's home directory instead of the VM's.)
 
-If the repo isn't pushed anywhere the VM can reach, ask the user to publish
-it to a remote the VM can reach before continuing.
+If there is no reachable remote, transfer a local checkout using an archive
+or Git bundle through `vm upload`, preserving the history and local changes
+needed for the task and excluding host secrets. Resolve the intended remote
+before promising push or pull support; publishing the repo is a separate action.
 
 Install the toolchain identified in step 1 inside the VM (language runtime at
 the pinned version, package manager, system libs), then install project
 dependencies (`npm ci`, `pip install -r requirements.txt`, etc.) and confirm
 the project's normal build/test command succeeds.
 
-If any harness was requested in step 2, also install it now — both CLIs are
-npm-distributed and need Node.js **22.x specifically** (`@anthropic-ai/claude-code`
-requires node >=22; npm only warns, not fails, on an older node, so this must
-be right at install time rather than caught later):
+If any harness was requested in step 2, also install it now — the commands below use npm with Node.js 22 as a setup baseline. Honor the
+project's runtime pins and check the selected CLI release's supported runtime
+before installation; use a separate harness runtime when necessary:
 
 ```bash
 "$JETTY" vm exec <vm-name> -- bash -c '
@@ -316,16 +351,16 @@ the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
   usage is unchanged (`gh pr create`, `gh issue list`, `gh api ...`, etc. all
   work as expected). Two operations have no REST equivalent at all in
   GitHub's API — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready`
-  (marking a draft PR ready for review) — and fail with a clear error instead
-  of silently doing nothing; do those manually in the GitHub web UI.
+  (marking a draft PR ready for review) — are handled differently: `merge --auto` errors, while `pr ready` prints
+  manual instructions and exits successfully without changing the PR. Complete
+  those operations in the GitHub web UI.
 
 ## 5. Set up SSH access
 
 The host has no address on the agent network. Instead, the gateway forwards
 one port per VM to that VM's SSH (`10.201.0.2`, port 2200 + the last octet of
 the VM's address), accepting only the host. That is still a single, ordinary
-SSH connection. `jetty vm create` already authorized the key; generate the matching
-`~/.ssh/config` entries:
+SSH connection. `jetty vm create` already authorized the key; inspect the generated SSH entries:
 
 ```bash
 "$JETTY" ssh-config    # entries for the gateway and every Jetty VM
@@ -333,10 +368,12 @@ SSH connection. `jetty vm create` already authorized the key; generate the match
 
 Jetty writes the generated entries to `~/.ssh/jetty_config` after gateway
 setup and VM create/delete, then adds a top-level `Include jetty_config` to
-`~/.ssh/config` if needed. It preserves the rest of the user's config. Do not
-rewrite either file yourself. If the user's private key is not available to
+`~/.ssh/config` if needed. It preserves the rest of the user's config. `jetty ssh-config` prints entries; it does not write or regenerate files.
+Keep the generated fragment managed by Jetty. If the user's private key is not available to
 the SSH agent or a standard SSH key lookup, ask which `IdentityFile` they
-want to use and have them add that setting to their Jetty host entries.
+want to use and add a user-owned `Host <vm-name>` block with that
+`IdentityFile` before `Include jetty_config` in `~/.ssh/config`; keep the
+generated fragment intact.
 
 Each VM entry carries `HostKeyAlias <vm-name>`, so its host key is stored
 under the VM's name. Accept it on first use, then verify:
@@ -356,18 +393,16 @@ Orca does not read these entries (step 7). It connects to the VM's own address
 (`"$JETTY" vm ip <vm-name>`) through the gateway as a jump host, using the system
 `ssh` with no terminal, so the VM's host key must also be trusted **under that
 IP**; the alias above doesn't count, and Orca fails with "Host key
-verification failed" (plus a harmless `ssh_askpass` error). `known_hosts` is
-usually hashed, so add the entry with `ssh-keyscan` rather than editing text.
-Fetch the key through the gateway, and compare its fingerprint with the one
-the VM reports over the verified `ssh <vm-name>` connection before trusting it:
+verification failed" (plus a harmless `ssh_askpass` error). Read the VM's host key through Jetty's trusted management path, then add
+that key under the IP. Trust the gateway's key on its first SSH connection,
+and verify the noninteractive jump-host connection:
 
 ```bash
 VM_IP=$("$JETTY" vm ip <vm-name>)
-ssh ubuntu@10.201.0.2 "ssh-keyscan -t ed25519 $VM_IP 2>/dev/null" > "$TMPDIR/hk"
-ssh-keygen -lf "$TMPDIR/hk"
-ssh <vm-name> 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub'   # must match
-cp ~/.ssh/known_hosts ~/.ssh/known_hosts.bak && cat "$TMPDIR/hk" >> ~/.ssh/known_hosts
-ssh -o BatchMode=yes -J ubuntu@10.201.0.2 ubuntu@$VM_IP echo ok
+VM_HOST_KEY=$("$JETTY" vm exec <vm-name> -- cat /etc/ssh/ssh_host_ed25519_key.pub)
+printf '%s %s\n' "$VM_IP" "$VM_HOST_KEY" >> "$HOME/.ssh/known_hosts"
+ssh -o StrictHostKeyChecking=accept-new jetty-gw echo ok
+ssh -o BatchMode=yes -J jetty-gw "ubuntu@$VM_IP" echo ok
 ```
 
 If a VM with the same name was deleted and recreated, its address may be
@@ -378,7 +413,8 @@ command above both succeed.
 
 ## 6. Register the VM with orca-proxy and wire the harness(es), git, and gh
 
-Skip this step entirely if steps 3c and 3d were skipped (no harness, no GitHub access).
+Skip the credential and harness/GitHub subsections when none were requested.
+Always complete the project setup and any needed Port Forwards below.
 
 ### Confirm registration
 
@@ -398,7 +434,16 @@ decision.
 ### Create Rules for this project
 
 Narrow to exactly what step 2 confirmed. Check `curl -fsS "$API/rules"` for
-priorities already in use — duplicates are rejected with `409`. For GitHub:
+priorities already in use — duplicates are rejected with `409`. Reuse existing
+matching Rules and preserve their priorities. Lower numbers run first: an
+earlier Allow or Block can prevent interception, and an earlier credential
+Rule may select a different Credential. Inspect overlapping Rules rather
+than assuming that adding another Rule makes it effective.
+
+These Rules scope credential injection, not all network access or HTTP
+methods. Unmatched traffic is allowed by default. A GitHub token's permissions
+and any additional policy determine whether writes succeed; a path prefix
+alone does not enforce read-only access. For GitHub:
 
 ```bash
 curl -fsS -X PUT "$API/rules/<vm-name>-github-api" \
@@ -409,7 +454,7 @@ curl -fsS -X PUT "$API/rules/<vm-name>-github-api" \
     "action": {"type": "allow_with_credential", "credential": "github-host-login",
                "path_prefix": "/repos/<org>/<repo>", "injection": {"type": "bearer"}}
   }'
-# only if push access was requested — path_prefix MUST exactly match the
+# for authenticated clone/fetch/pull as well as authorized push — path_prefix MUST exactly match the
 # request path git's smart-HTTP client actually sends, which is whatever
 # the repo's own `origin` remote says verbatim (git does NOT normalize a
 # ".git"-less remote by appending ".git", nor strip it from one that has
@@ -467,9 +512,9 @@ curl -fsS -X PUT "$API/rules/<vm-name>-codex" \
 ### Configure the harness(es) — no explicit proxy config
 
 This is the key behavior change from the old CLIProxyAPI-broker setup:
-neither harness needs a custom base URL, a custom `config.toml` provider
-pointed at a broker, or any credential the VM's client itself treats as
-real. The gateway already forces their real, default outbound traffic through
+Use the providers' real endpoints and guest placeholders, with live credentials
+held on the host. Claude uses its default endpoint; the subscription Codex
+example below selects the real ChatGPT endpoint through a custom provider. The gateway already forces their real, default outbound traffic through
 orca-proxy transparently; each just needs a placeholder credential on its
 own native auth surface so it sends a real request with *something* for the
 Rule above to overwrite.
@@ -510,6 +555,11 @@ TOML
 "
 ```
 
+On an existing VM, merge the Codex provider settings into its configuration;
+preserve unrelated model, project, and tool settings. The heredoc above is for
+a fresh configuration only. Likewise, merge global harness instructions and
+any temporary permission grants instead of replacing existing files.
+
 Now confirm CA trust actually landed — this needs a real intercepted call to
 prove, which is why it's checked here rather than right after installing it.
 **No `-f`** — a bare `GET /` against `api.anthropic.com` legitimately 502s
@@ -520,12 +570,18 @@ issuer, not that the HTTP status is 2xx:
 
 ```bash
 "$JETTY" vm exec <vm-name> -- bash -lc '
-  curl -sS -o /dev/null https://api.anthropic.com/ \
+  curl -sS -v -o /dev/null https://api.anthropic.com/ \
     && echo "CA trust OK (a non-2xx status here is expected and fine — this only confirms curl completed the TLS handshake without a certificate error)"
 '
 ```
 
-Then verify the whole chain with one real call per harness — fail loudly
+Use a hostname covered by an effective credential Rule (`chatgpt.com` for
+Codex-only setups, or the configured GitHub host when no harness is installed).
+Inspect the certificate issuer and Jetty request logs to confirm interception;
+a successful curl alone also succeeds on unintercepted public TLS.
+
+After the GitHub subsection below has prepared any private clone, verify the
+whole chain with one real call per requested harness — fail loudly
 here rather than let the user discover a bare auth error on the harness's
 first real turn:
 
@@ -543,6 +599,9 @@ Credential fails every harness identically, and shouldn't be mistaken for a
 VM-side problem.
 
 ### git / gh CLI
+
+Configure this subsection before cloning a private GitHub repository or running
+checks that require the checkout. Then perform the clone described in step 4.
 
 Skip this subsection if step 2 established the VM needs no GitHub access.
 
@@ -579,11 +638,6 @@ usage (`gh pr create`, `gh issue list`, `gh run watch`, `gh api ...`) just
 works unmodified. It needs `python3` and `jq` (`--jq` filtering shells out to it rather than
 reimplementing jq's expression language), both installed in step 4.
 
-```bash
-```
-
-`jq` was already installed in step 4.
-
 Its complete source lives in the installed release at `gh-rest/gh-rest.py` —
 read it from there rather than a checkout's `main` branch, and pipe it in
 over stdin:
@@ -603,8 +657,9 @@ separate helper binary.
 Two `gh` operations genuinely have no REST equivalent in GitHub's API at
 all — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready` (marking
 a draft PR ready for review), both GraphQL-only mutations — and this `gh`
-fails those loudly with an explanation rather than silently no-op'ing. Do
-those two specifically through the GitHub web UI.
+rejects `merge --auto`, while `pr ready` prints the PR URL and manual
+instructions, then exits 0 without changing readiness. Complete both through
+the GitHub web UI; an exit code of 0 from `pr ready` does not prove completion.
 
 `gh` reads `GH_TOKEN` (falling back to `GITHUB_TOKEN`) but doesn't require
 either to be set — with neither set it sends no `Authorization` header at
@@ -658,8 +713,8 @@ orca-proxy, not just the tools explicitly wired to a proxy:
 ```
 
 Finally, verify the *agent* — not just a manual shell command — can actually
-drive `gh` through this chain, since that's the thing that matters. Run it
-non-interactively inside the VM with `-p`:
+drive `gh` through this chain, since that's the thing that matters. Use an installed, requested harness; skip this check when none was requested.
+For Claude Code, run it noninteractively with `-p`:
 
 ```bash
 "$JETTY" vm exec <vm-name> -- bash -lc \
@@ -673,9 +728,35 @@ Claude Code's own server-side classifier being extra cautious about
 Don't reach for `--dangerously-skip-permissions` to work around it; instead
 pre-grant the exact command in `~/.claude/settings.json` inside the VM
 (`{"permissions": {"allow": ["Bash(gh api repos/<org>/<repo>/issues:*)"]}}`)
-and retry without that flag. Remove any settings file you added purely to
+and retry without that flag. Remove only permission entries you added purely to
 run this check once it passes — it's a verification step, not part of the
 intended end state.
+
+### Complete project setup
+
+Once required Rules and guest authentication are configured, complete the
+clone or local transfer from step 4, install dependencies, and run the project's
+normal build/test command. For private GitHub clones, use HTTPS with the exact
+repository path covered by the git Rule; SSH remotes bypass that credential
+injection. Prepare the clone before running the harness checks that use it.
+If no credentialed access was requested, complete this setup directly.
+
+### Reach a development server from the host
+
+Use Jetty Port Forwards when the project needs a browser or other host-side
+client to reach a VM service. Services may bind to the guest's localhost.
+This is host ingress and is independent of outbound Rules:
+
+```bash
+"$JETTY" vm port open <vm-name> 5173
+"$JETTY" vm port open <vm-name> 8000 --host-port 18000 --persistent
+"$JETTY" vm port list <vm-name>
+"$JETTY" vm port close <vm-name> 5173
+```
+
+Open the returned loopback URL on the host. One-time forwards end when closed
+or the daemon stops; persistent forwards reopen when Jetty starts. Create only
+forwards needed by the project, and report any persistent ones to the user.
 
 ## 7. Tell the user exactly how to add this as an Orca SSH project
 
@@ -704,11 +785,11 @@ you just set up):
 6. If a harness was installed, tell the user which one(s) are ready to use
    with no further login step (`codex`, `claude`) — orca-proxy already
    injects their credentials transparently.
-7. If GitHub access was wired up, tell the user exactly which repo(s) and
-   operations the agent can use (`git clone`/`push`, `gh pr`/`issue`
-   read/create) — and which it explicitly can't (anything off the Rules,
-   e.g. other repos or `gh api user`) — so they aren't surprised by an
-   unexpected result mid-task.
+7. If GitHub access was wired up, tell the user which repo(s) and
+   operations were verified, and which paths receive credentials. Other paths
+   remain credential-free by default; public resources may still be reachable.
+   Describe the token's actual permissions rather than treating these Rules
+   as a read/write permission boundary.
 
 Remind the user that agents and `git worktree` will now execute on the VM,
 while Orca's editor/diff/UI stay local; that stopping/deleting the VM
@@ -745,14 +826,18 @@ some new path through the gateway mysteriously loses its replies.
 ### Removing a VM, or everything
 
 ```bash
-# Its Rules first, or the proxy refuses to unregister a VM they reference:
+# Inspect Rules first; the proxy refuses to unregister a referenced VM:
 curl -fsS "$API/rules" | jq -r --arg vm <vm-name> '.rules[] | select(.vm_selector.vms // [] | index($vm)) | .name'
-curl -fsS -X DELETE "$API/rules/<rule-name>"   # for each name printed
+# Delete Rules exclusive to this VM; update shared selectors to retain other VMs.
+# Close this VM's Port Forwards before deletion.
+curl -fsS -X DELETE "$API/rules/<exclusive-rule-name>"
 "$JETTY" vm delete <vm-name>                          # deletes the VM and unregisters it
 ```
 
-Then remove its entry from `~/.ssh/jetty_config` (or regenerate the file
-with `"$JETTY" ssh-config`) and `ssh-keygen -R <vm-name>`.
+`vm delete` refreshes the generated SSH fragment automatically. Remove stale
+known-host entries for the alias and IP if necessary. Inspect `vm port list`
+and close its forwards before deletion. For Rules shared with other VMs,
+remove only the deleted VM from their selectors; retain the other VMs' policy.
 
 To remove the whole LXD mode (only with the user's explicit OK — it stops
 every Jetty VM):
