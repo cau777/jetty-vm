@@ -25,6 +25,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtDBus import QDBusConnection, QDBusMessage, QDBusPendingCallWatcher
 from PySide6.QtGui import QDesktopServices
 
 from . import config
@@ -626,8 +627,22 @@ class DesktopBackend(QObject):
         url = QUrl(f"sftp://{vm_name}/home/ubuntu")
         if self._demo:
             self._notify(f"Preview only: would open {url.toString()}.")
-        elif not QDesktopServices.openUrl(url):
-            self._notify(f"Could not open {url.toString()} in the file manager.", "danger")
+            return
+        # xdg-open (gio open on GNOME) refuses an SFTP location until GVFS has mounted it;
+        # the file manager's own window mounts it, prompting for host keys if needed.
+        call = QDBusMessage.createMethodCall(
+            "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1", "ShowFolders",
+        )
+        call.setArguments([[url.toString()], ""])
+        watcher = QDBusPendingCallWatcher(QDBusConnection.sessionBus().asyncCall(call), self)
+
+        def finished(watcher: QDBusPendingCallWatcher) -> None:
+            watcher.deleteLater()
+            if watcher.isError() and not QDesktopServices.openUrl(url):
+                self._notify(f"Could not open {url.toString()} in the file manager.", "danger")
+
+        watcher.finished.connect(finished)
 
     @Slot(str)
     def deleteVm(self, name: str) -> None:
