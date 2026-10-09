@@ -32,6 +32,8 @@ GATEWAY_IMAGE = "ubuntu:24.04"
 AGENT_IMAGE = "ubuntu:24.04"
 SSH_PORT_BASE = 2200
 TUNNEL_PORT = 51820
+# Lets guests hand freed memory back to the host instead of holding their peak usage.
+FREE_PAGE_REPORTING = '[device "qemu_balloon"]\nfree-page-reporting = "on"\n'
 _SIZE_RE = re.compile(r"^[1-9][0-9]*(?:[KMGT]i?B)?$")
 
 
@@ -266,6 +268,7 @@ class JettyLxd:
             if await self._instance(client, name) is not None:
                 raise Conflict(f"VM '{name}' already exists")
             ip = await self._next_ip(client)
+            await self._ensure_profile(client)
             ca_row = ca.get(self.db)
             if ca_row is None:
                 raise LxdError("Jetty's interception CA is not initialized")
@@ -351,6 +354,8 @@ class JettyLxd:
             instance = await self._instance(client, name)
             if instance is None:
                 raise NotFound(f"VM '{name}' not found")
+            if action != "stop":
+                await self._ensure_profile(client)
             status = instance.get("status")
             if action == "start" or (action == "restart" and status == "Stopped"):
                 await self._start(client, name)
@@ -495,10 +500,21 @@ class JettyLxd:
     async def _ensure_profile(self, client: LxdClient) -> None:
         profile = await client.request("GET", "/1.0/profiles/default")
         devices = profile.get("devices") or {}
-        if "root" not in devices:
-            devices["root"] = {"type": "disk", "pool": "default", "path": "/"}
-            profile["devices"] = devices
+        config = profile.get("config") or {}
+        if "root" in devices and "raw.qemu.conf" in config:
+            return
+        devices.setdefault("root", {"type": "disk", "pool": "default", "path": "/"})
+        config.setdefault("raw.qemu.conf", FREE_PAGE_REPORTING)
+        profile["devices"] = devices
+        profile["config"] = config
+        try:
             await client.request("PUT", "/1.0/profiles/default", body=profile)
+        except LxdError:
+            # LXD saves the profile but reports an error because running VMs only
+            # pick up raw.qemu.conf on their next start; anything else is a real failure.
+            saved = await client.request("GET", "/1.0/profiles/default")
+            if (saved.get("config") or {}).get("raw.qemu.conf") != config["raw.qemu.conf"]:
+                raise
 
     async def _ensure_network(self, client: LxdClient, name: str, desired: dict[str, str]) -> None:
         try:
