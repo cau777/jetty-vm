@@ -36,3 +36,10 @@ def test_new_vm_inventory_action_opens_the_vm_editor():
     backend.openEditor("vms", "")
 
     assert backend.editor["kind"] == "vm"
+
+
+def test_open_files_previews_the_vm_sftp_location_in_demo_mode():
+    backend = DesktopBackend(demo=True)
+    backend.openFiles("agent-harness")
+
+    assert backend.message == "Preview only: would open sftp://agent-harness/home/ubuntu."

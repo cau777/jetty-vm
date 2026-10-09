@@ -20,10 +20,12 @@ from PySide6.QtCore import (
     QSettings,
     QThreadPool,
     QTimer,
+    QUrl,
     Qt,
     Signal,
     Slot,
 )
+from PySide6.QtGui import QDesktopServices
 
 from . import config
 
@@ -617,6 +619,15 @@ class DesktopBackend(QObject):
             "Could not update the port forward.",
             f"localhost:{host_port} " + ("now starts with Jetty." if persistent else "closes when Jetty stops."),
         )
+
+    @Slot(str)
+    def openFiles(self, vm_name: str) -> None:
+        # Resolved through the Host alias Jetty writes to ~/.ssh/jetty_config.
+        url = QUrl(f"sftp://{vm_name}/home/ubuntu")
+        if self._demo:
+            self._notify(f"Preview only: would open {url.toString()}.")
+        elif not QDesktopServices.openUrl(url):
+            self._notify(f"Could not open {url.toString()} in the file manager.", "danger")
 
     @Slot(str)
     def deleteVm(self, name: str) -> None:

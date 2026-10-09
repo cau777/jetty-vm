@@ -61,6 +61,12 @@ Pane {
                         onClicked: root.confirmationRequested("vm", root.backend.selection.name, root.backend.selection.status === "Running" ? "stop" : "start")
                     }
                     JettyButton { text: "Restart"; flat: true; onClicked: root.confirmationRequested("vm", root.backend.selection.name, "restart") }
+                    JettyButton {
+                        text: "Open Files"
+                        flat: true
+                        enabled: root.backend.selection.status === "Running"
+                        onClicked: root.backend.openFiles(root.backend.selection.name)
+                    }
                     JettyButton { text: "Delete"; destructive: true; onClicked: root.confirmationRequested("vm", root.backend.selection.name, "delete") }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544" }
