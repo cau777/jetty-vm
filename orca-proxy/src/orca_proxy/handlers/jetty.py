@@ -115,6 +115,7 @@ async def create_vm(request: web.Request) -> web.Response:
 async def delete_vm(request: web.Request) -> web.Response:
     await _call(_service(request).delete_vm(request.match_info["name"]))
     await request.app["port_forwards"].drop_vm(request.match_info["name"])
+    await request.app["reverse_forwards"].drop_vm(request.match_info["name"])
     return web.Response(status=204)
 
 
@@ -152,6 +153,43 @@ async def update_port(request: web.Request) -> web.Response:
 
 async def close_port(request: web.Request) -> web.Response:
     await request.app["port_forwards"].close(request.match_info["name"], _host_port(request))
+    return web.Response(status=204)
+
+
+def _vm_port(request: web.Request) -> int:
+    try:
+        return int(request.match_info["vm_port"])
+    except ValueError:
+        raise NotFound(f"No reverse forward on VM port {request.match_info['vm_port']}") from None
+
+
+async def list_reverse_ports(request: web.Request) -> web.Response:
+    return web.json_response({"ports": request.app["reverse_forwards"].list(request.query.get("vm"))})
+
+
+async def open_reverse_port(request: web.Request) -> web.Response:
+    body = await read_json_body(request)
+    reject_unknown_fields(body, {"host_port", "vm_port", "persistent"})
+    forward = request.app["reverse_forwards"].open(
+        request.match_info["name"],
+        body.get("host_port"),
+        body.get("vm_port"),
+        body.get("persistent", False),
+    )
+    return web.json_response(forward, status=201)
+
+
+async def update_reverse_port(request: web.Request) -> web.Response:
+    body = await read_json_body(request)
+    reject_unknown_fields(body, {"persistent"})
+    forward = request.app["reverse_forwards"].set_persistent(
+        request.match_info["name"], _vm_port(request), body.get("persistent")
+    )
+    return web.json_response(forward)
+
+
+async def close_reverse_port(request: web.Request) -> web.Response:
+    await request.app["reverse_forwards"].close(request.match_info["name"], _vm_port(request))
     return web.Response(status=204)
 
 

@@ -13,7 +13,7 @@ from .handlers import system as system_handlers
 from .handlers import vms as vm_handlers
 from .jetty import JettyLxd
 from .jobs import JobManager
-from .port_forwards import Connector, PortForwardManager, SshConnector
+from .port_forwards import Connector, PortForwardManager, ReverseForwardManager, SshConnector
 
 
 def create_app(
@@ -31,7 +31,7 @@ def create_app(
     `credential_cache` lets the caller share cache state with the interception
     path when both run in one process. It defaults to a fresh instance for
     standalone development. `port_forward_connector` replaces the SSH
-    transport behind Port Forwards in tests.
+    transport behind Port Forwards and Reverse Forwards in tests.
     """
     app = web.Application(client_max_size=128 * 1024 * 1024, middlewares=[error_middleware])
 
@@ -51,10 +51,11 @@ def create_app(
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
     app["jobs"] = JobManager()
-    app["port_forwards"] = PortForwardManager(
-        conn,
-        port_forward_connector or SshConnector(lambda name, key: JettyLxd(conn).prepare_port_forward(name, key)),
+    connector = port_forward_connector or SshConnector(
+        lambda name, key: JettyLxd(conn).prepare_port_forward(name, key)
     )
+    app["port_forwards"] = PortForwardManager(conn, connector)
+    app["reverse_forwards"] = ReverseForwardManager(conn, connector)
 
     # The WireGuard keys the tunnel listener uses (tunnel.py). Create them in
     # standalone development as well as in the desktop daemon.
@@ -81,6 +82,10 @@ def create_app(
             web.post("/api/v1/jetty/vms/{name}/ports", jetty_handlers.open_port),
             web.patch("/api/v1/jetty/vms/{name}/ports/{host_port}", jetty_handlers.update_port),
             web.delete("/api/v1/jetty/vms/{name}/ports/{host_port}", jetty_handlers.close_port),
+            web.get("/api/v1/jetty/reverse-ports", jetty_handlers.list_reverse_ports),
+            web.post("/api/v1/jetty/vms/{name}/reverse-ports", jetty_handlers.open_reverse_port),
+            web.patch("/api/v1/jetty/vms/{name}/reverse-ports/{vm_port}", jetty_handlers.update_reverse_port),
+            web.delete("/api/v1/jetty/vms/{name}/reverse-ports/{vm_port}", jetty_handlers.close_reverse_port),
             web.get("/api/v1/jetty/ssh-config", jetty_handlers.ssh_config),
             web.get("/api/v1/ca", ca_handlers.get_ca),
             web.get("/api/v1/vms", vm_handlers.list_vms),
@@ -103,9 +108,11 @@ def create_app(
 
     async def start_port_forwards(_app: web.Application) -> None:
         app["port_forwards"].start_persistent()
+        app["reverse_forwards"].start_persistent()
 
     async def close_db(_app: web.Application) -> None:
         await app["port_forwards"].shutdown()
+        await app["reverse_forwards"].shutdown()
         await app["jobs"].close()
         conn.close()
         requests_conn.close()

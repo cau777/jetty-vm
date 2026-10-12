@@ -59,3 +59,7 @@ _Avoid_: Origin, client IP
 **Port Forward**:
 A host loopback port tunneled to a port inside one VM, identified by its host port. One-time forwards last until closed or the daemon stops; persistent forwards reopen whenever the daemon starts. A Port Forward is host ingress into a VM and is independent of Rules, which govern VM egress.
 _Avoid_: Port mapping, exposed port
+
+**Reverse Forward**:
+A host loopback port made reachable on a loopback port inside one VM, identified by that VM and VM port. It is carried over the host's SSH connection to the VM, so the Gateway still drops VM traffic to host and private addresses. Persistence works as for a Port Forward. It is independent of Rules and grants the Untrusted Agent whatever access the host service grants.
+_Avoid_: Host share, remote forward

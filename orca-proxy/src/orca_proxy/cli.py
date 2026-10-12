@@ -128,6 +128,18 @@ def _parser() -> argparse.ArgumentParser:
     port_close = port_modes.add_parser("close", help="stop a port forward")
     port_close.add_argument("name")
     port_close.add_argument("host_port", type=int)
+    vm_reverse = vm_modes.add_parser("reverse-port", help="expose ports on this computer to localhost inside a VM")
+    reverse_modes = vm_reverse.add_subparsers(dest="reverse_mode", required=True)
+    reverse_open = reverse_modes.add_parser("open", help="expose a host port; one-time unless --persistent")
+    reverse_open.add_argument("name")
+    reverse_open.add_argument("host_port", type=int)
+    reverse_open.add_argument("--vm-port", type=int, help="localhost port inside the VM (default: the host port)")
+    reverse_open.add_argument("--persistent", action="store_true", help="reopen whenever Jetty starts")
+    reverse_list = reverse_modes.add_parser("list", help="list reverse forwards")
+    reverse_list.add_argument("name", nargs="?")
+    reverse_close = reverse_modes.add_parser("close", help="stop a reverse forward")
+    reverse_close.add_argument("name")
+    reverse_close.add_argument("vm_port", type=int)
 
     ssh = modes.add_parser("ssh-config", help="print SSH entries for the gateway and agent VMs")
     ssh.add_argument("names", nargs="*")
@@ -218,6 +230,8 @@ def _vm(args) -> int:
         return 0
     if args.vm_mode == "port":
         return _vm_port(args, encoded_name)
+    if args.vm_mode == "reverse-port":
+        return _vm_reverse_port(args, encoded_name)
     return 2
 
 
@@ -240,6 +254,29 @@ def _vm_port(args, encoded_name: str) -> int:
     if args.port_mode == "close":
         _api("DELETE", f"/api/v1/jetty/vms/{encoded_name}/ports/{args.host_port}")
         print(f"Closed localhost:{args.host_port}")
+        return 0
+    return 2
+
+
+def _vm_reverse_port(args, encoded_name: str) -> int:
+    if args.reverse_mode == "open":
+        body: dict = {"host_port": args.host_port, "persistent": args.persistent}
+        if args.vm_port is not None:
+            body["vm_port"] = args.vm_port
+        forward = _api("POST", f"/api/v1/jetty/vms/{encoded_name}/reverse-ports", body)
+        kind = "persistent" if forward["persistent"] else "one-time"
+        print(f"{args.name}:localhost:{forward['vm_port']} -> localhost:{forward['host_port']} ({kind})")
+        return 0
+    if args.reverse_mode == "list":
+        query = f"?vm={encoded_name}" if args.name else ""
+        for forward in _api("GET", f"/api/v1/jetty/reverse-ports{query}").get("ports", []):
+            kind = "persistent" if forward["persistent"] else "one-time"
+            line = f"{forward['vm_name']}:{forward['vm_port']}\tlocalhost:{forward['host_port']}\t{kind}\t{forward['state']}"
+            print(line + (f"\t{forward['error']}" if forward.get("error") else ""))
+        return 0
+    if args.reverse_mode == "close":
+        _api("DELETE", f"/api/v1/jetty/vms/{encoded_name}/reverse-ports/{args.vm_port}")
+        print(f"Closed {args.name}:localhost:{args.vm_port}")
         return 0
     return 2
 

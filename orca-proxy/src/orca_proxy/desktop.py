@@ -147,6 +147,7 @@ class DesktopBackend(QObject):
         self._raw_vms: list[dict] = []
         self._rules: list[dict] = []
         self._ports: list[dict] = []
+        self._reverse_ports: list[dict] = []
         self._system_status: dict[str, Any] = {"state": "unknown", "lxd_available": False}
         self._jetty_status: dict[str, Any] = {"gateway": "unknown", "vms": []}
         self._ready = False
@@ -243,11 +244,20 @@ class DesktopBackend(QObject):
         self._load("/api/v1/credentials", lambda body: self.credentialsModel.replace(body.get("credentials", [])))
         self._load("/api/v1/requests?limit=100", lambda body: self.connectionsModel.replace(body.get("connections", [])))
         self._load("/readyz", lambda body: self._set_ready(bool(body.get("ready"))))
+        self._load_ports()
+
+    def _load_ports(self) -> None:
         self._load("/api/v1/jetty/ports", lambda body: self._set_ports(body.get("ports", [])))
+        self._load("/api/v1/jetty/reverse-ports", lambda body: self._set_reverse_ports(body.get("ports", [])))
 
     def _set_ports(self, ports: list[dict]) -> None:
         if ports != self._ports:
             self._ports = ports
+            self.portsChanged.emit()
+
+    def _set_reverse_ports(self, ports: list[dict]) -> None:
+        if ports != self._reverse_ports:
+            self._reverse_ports = ports
             self.portsChanged.emit()
 
     def _replace_raw_vms(self, vms: list[dict]) -> None:
@@ -292,6 +302,10 @@ class DesktopBackend(QObject):
             {"vm_name": "agent-harness", "vm_port": 5173, "host_port": 5173, "persistent": False, "state": "active", "error": None, "url": "http://localhost:5173"},
             {"vm_name": "agent-harness", "vm_port": 8000, "host_port": 18000, "persistent": True, "state": "retrying", "error": "connect to host 10.201.0.2 port 2211: Connection refused", "url": "http://localhost:18000"},
         ])
+        self._set_reverse_ports([
+            {"vm_name": "agent-harness", "vm_port": 5432, "host_port": 5432, "persistent": True, "state": "active", "error": None},
+            {"vm_name": "agent-harness", "vm_port": 11434, "host_port": 11434, "persistent": False, "state": "retrying", "error": "Error: remote port forwarding failed for listen port 11434"},
+        ])
         self.connectionsModel.replace([{"id": 42, "started_at": "2026-10-05T17:30:00Z", "vm_name": "agent-harness", "destination_hostname": "api.github.com", "destination_ip": "140.82.112.5", "destination_port": 443, "sni_present": True, "ech_present": False, "intercepted": False, "outcome": "allow_rule", "duration_ms": 81, "matched_rule": {"name": "github", "priority": 10}}])
         self._rebuild_vms()
         self.statusChanged.emit()
@@ -327,6 +341,10 @@ class DesktopBackend(QObject):
     @Property("QVariantList", notify=portsChanged)
     def portForwards(self):
         return self._ports
+
+    @Property("QVariantList", notify=portsChanged)
+    def reverseForwards(self):
+        return self._reverse_ports
 
     @Property(str, notify=projectDirChanged)
     def projectDir(self) -> str:
@@ -584,7 +602,7 @@ class DesktopBackend(QObject):
                 self._notify(str(result.get("message", failure)), "danger")
                 return
             self._notify(success, "success")
-            self._load("/api/v1/jetty/ports", lambda body: self._set_ports(body.get("ports", [])))
+            self._load_ports()
 
         self._request(method, path, body, complete)
 
@@ -619,6 +637,39 @@ class DesktopBackend(QObject):
             "PATCH", f"/api/v1/jetty/vms/{encoded}/ports/{host_port}", {"persistent": persistent},
             "Could not update the port forward.",
             f"localhost:{host_port} " + ("now starts with Jetty." if persistent else "closes when Jetty stops."),
+        )
+
+    @Slot(str, str, str, bool)
+    def openReversePort(self, vm_name: str, host_port: str, vm_port: str, persistent: bool) -> None:
+        try:
+            body: dict[str, Any] = {"host_port": int(host_port), "persistent": persistent}
+            if vm_port.strip():
+                body["vm_port"] = int(vm_port)
+        except ValueError:
+            self._notify("Ports must be numbers.", "danger")
+            return
+        encoded = urllib.parse.quote(vm_name, safe="")
+        remote = body.get("vm_port", body["host_port"])
+        self._port_request(
+            "POST", f"/api/v1/jetty/vms/{encoded}/reverse-ports", body,
+            "Reverse forward failed.", f"{vm_name} reaches localhost:{body['host_port']} on localhost:{remote}.",
+        )
+
+    @Slot(str, int)
+    def closeReversePort(self, vm_name: str, vm_port: int) -> None:
+        encoded = urllib.parse.quote(vm_name, safe="")
+        self._port_request(
+            "DELETE", f"/api/v1/jetty/vms/{encoded}/reverse-ports/{vm_port}", None,
+            "Could not close the reverse forward.", f"Closed {vm_name}:localhost:{vm_port}.",
+        )
+
+    @Slot(str, int, bool)
+    def setReversePortPersistent(self, vm_name: str, vm_port: int, persistent: bool) -> None:
+        encoded = urllib.parse.quote(vm_name, safe="")
+        self._port_request(
+            "PATCH", f"/api/v1/jetty/vms/{encoded}/reverse-ports/{vm_port}", {"persistent": persistent},
+            "Could not update the reverse forward.",
+            f"{vm_name}:localhost:{vm_port} " + ("now starts with Jetty." if persistent else "closes when Jetty stops."),
         )
 
     @Slot(str)

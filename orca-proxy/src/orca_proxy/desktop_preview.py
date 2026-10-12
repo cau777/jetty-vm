@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = [
         (400, lambda: capture("01-vms")),
+        (100, lambda: backend.selectItem("vms", "agent-harness")),
+        (350, lambda: capture("01-vm-inspector")),
         (250, lambda: (backend.setView("rules"), backend.selectItem("rules", "github"))),
         (350, lambda: capture("02-rules")),
         (250, lambda: (backend.setView("credentials"), backend.selectItem("credentials", "claude-code-subscription"))),

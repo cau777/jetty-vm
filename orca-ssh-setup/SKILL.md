@@ -770,6 +770,24 @@ Open the returned loopback URL on the host. One-time forwards end when closed
 or the daemon stops; persistent forwards reopen when Jetty starts. Create only
 forwards needed by the project, and report any persistent ones to the user.
 
+### Reach a host service from the VM
+
+Use Jetty Reverse Forwards only when the user explicitly asks for the VM to
+reach a service on their computer, such as a local database or model server.
+It exposes the host's `localhost:<host-port>` on the guest's
+`localhost:<vm-port>` (default: the same port, which must be 1024 or higher),
+and the untrusted agent gets whatever access that service grants:
+
+```bash
+"$JETTY" vm reverse-port open <vm-name> 5432
+"$JETTY" vm reverse-port open <vm-name> 11434 --vm-port 21434 --persistent
+"$JETTY" vm reverse-port list <vm-name>
+"$JETTY" vm reverse-port close <vm-name> 5432        # by VM port
+```
+
+Never open one on your own initiative, and report every Reverse Forward you
+create to the user.
+
 ## 7. Tell the user exactly how to add this as an Orca SSH project
 
 Give the user these concrete, copy-pasteable steps (fill in the real values
@@ -841,14 +859,14 @@ some new path through the gateway mysteriously loses its replies.
 # Inspect Rules first; the proxy refuses to unregister a referenced VM:
 curl -fsS "$API/rules" | jq -r --arg vm <vm-name> '.rules[] | select(.vm_selector.vms // [] | index($vm)) | .name'
 # Delete Rules exclusive to this VM; update shared selectors to retain other VMs.
-# Close this VM's Port Forwards before deletion.
+# Close this VM's Port Forwards and Reverse Forwards before deletion.
 curl -fsS -X DELETE "$API/rules/<exclusive-rule-name>"
 "$JETTY" vm delete <vm-name>                          # deletes the VM and unregisters it
 ```
 
 `vm delete` refreshes the generated SSH fragment automatically. Remove stale
-known-host entries for the alias and IP if necessary. Inspect `vm port list`
-and close its forwards before deletion. For Rules shared with other VMs,
+known-host entries for the alias and IP if necessary. Inspect `vm port list` and
+`vm reverse-port list` and close its forwards before deletion. For Rules shared with other VMs,
 remove only the deleted VM from their selectors; retain the other VMs' policy.
 
 To remove the whole LXD mode (only with the user's explicit OK — it stops

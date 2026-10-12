@@ -6,9 +6,9 @@ import QtQuick.Layouts
 ApplicationWindow {
     id: root
     property var controller: backend
-    width: 1320
+    width: 1380
     height: 820
-    minimumWidth: 980
+    minimumWidth: 1100
     minimumHeight: 620
     visible: true
     title: "Jetty"
@@ -126,13 +126,14 @@ ApplicationWindow {
 
                     RowLayout {
                         Layout.fillWidth: true
+                        // Fills and elides so the table, not the inspector, gives way on narrow windows.
                         ColumnLayout {
+                            Layout.fillWidth: true
                             spacing: 2
                             Label { text: "INVENTORY"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.4 }
-                            Label { text: backend.viewTitle + "  " + backend.currentModel.count; font.pixelSize: 22; font.bold: true }
-                            Label { text: backend.viewSubtitle; color: "#8793a5"; font.pixelSize: 12 }
+                            Label { Layout.fillWidth: true; text: backend.viewTitle + "  " + backend.currentModel.count; font.pixelSize: 22; font.bold: true; elide: Text.ElideRight }
+                            Label { Layout.fillWidth: true; text: backend.viewSubtitle; color: "#8793a5"; font.pixelSize: 12; elide: Text.ElideRight }
                         }
-                        Item { Layout.fillWidth: true }
                         JettyButton { text: "Refresh"; flat: true; onClicked: backend.refresh() }
                         JettyButton {
                             visible: backend.activeView !== "logs"
@@ -202,7 +203,7 @@ ApplicationWindow {
                 // Right inspector
                 Inspector {
                     Layout.fillHeight: true
-                    Layout.preferredWidth: 355
+                    Layout.preferredWidth: 410
                     backend: root.controller
                     onConfirmationRequested: (kind, name, action) => root.showConfirmation(kind, name, action)
                 }

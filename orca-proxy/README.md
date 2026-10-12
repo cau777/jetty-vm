@@ -28,6 +28,14 @@ checked against the VM's host key over the LXD socket. One-time forwards last
 until closed or the daemon stops; persistent ones are stored and reopen when
 the daemon starts. Deleting a VM removes its forwards.
 
+Reverse Forwards go the other way: they expose a port on the host's localhost
+on the VM's `127.0.0.1`, for example a database or a local model server. The
+daemon supervises an `ssh -N -R` over the same connection, so the gateway's
+firewall still drops VM traffic to host and LAN addresses. VM ports start at
+1024 because the VM side binds as `ubuntu`. Several VMs may reach the same host
+port. The agent gets whatever access that service grants, so expose only
+services you would hand it.
+
 ## CLI
 
 ```bash
@@ -40,6 +48,10 @@ jetty vm port open my-agent 5173                 # one-time, localhost:5173
 jetty vm port open my-agent 8000 --host-port 18000 --persistent
 jetty vm port list
 jetty vm port close my-agent 5173
+jetty vm reverse-port open my-agent 5432         # VM localhost:5432 -> host localhost:5432
+jetty vm reverse-port open my-agent 11434 --vm-port 21434 --persistent
+jetty vm reverse-port list
+jetty vm reverse-port close my-agent 5432        # by VM port
 ```
 
 Run `jetty --help` and `jetty vm --help` for the other lifecycle operations.
