@@ -34,6 +34,7 @@ from mitmproxy import http, tls
 # (`uv run mitmdump -s ...`), per #4/#12's deployment model.
 from orca_proxy import config, db, request_log, rule_engine, tunnel
 from orca_proxy.app import create_app
+from orca_proxy import aws_signing
 from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError, digest
 from orca_proxy.redaction import redact_headers
 from orca_proxy.repo import credentials as credentials_repo
@@ -280,11 +281,27 @@ class OrcaProxyAddon:
             return
 
         if decision.outcome == rule_engine.ALLOW_CREDENTIAL:
+            injection = decision.injection
+            if injection["type"] == "aws_sigv4":
+                try:
+                    aws_signing.validate_request(flow.request, hostname)
+                except aws_signing.UnsupportedAWSRequest as exc:
+                    flow.response = http.Response.make(400, str(exc).encode(), {"Content-Type": "text/plain"})
+                    self._log_request(flow, status=400, status_origin="proxy")
+                    flow.metadata["orca_logged"] = True
+                    return
             credential_row = credentials_repo.get(self._state_conn, decision.credential)
             try:
+                kwargs = {"output_format": "aws_process"} if injection["type"] == "aws_sigv4" else {}
                 value = await self._credentials.get_value(
-                    decision.credential, credential_row["command"], credential_row["ttl_seconds"]
+                    decision.credential, credential_row["command"], credential_row["ttl_seconds"], **kwargs
                 )
+                if injection["type"] == "aws_sigv4":
+                    try:
+                        aws_signing.sign_request(flow.request, hostname, injection, value)
+                    except ValueError as exc:
+                        self._credentials.reject(decision.credential, digest(value))
+                        raise CredentialExecutionError("invalid_output", "AWS signing failed") from exc
             except CredentialExecutionError:
                 flow.response = http.Response.make(
                     502,
@@ -295,7 +312,6 @@ class OrcaProxyAddon:
                 flow.metadata["orca_logged"] = True
                 return
 
-            injection = decision.injection
             header_name = "Authorization"
             if injection["type"] == "bearer":
                 flow.request.headers[header_name] = f"Bearer {value}"

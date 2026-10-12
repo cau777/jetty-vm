@@ -232,10 +232,15 @@ Drawer {
                     ComboBox {
                         id: injectionType
                         Layout.fillWidth: true
-                        model: ["Bearer", "Basic"]
-                        currentIndex: root.backend.editor.action && root.backend.editor.action.injection && root.backend.editor.action.injection.type === "basic" ? 1 : 0
+                        model: ["Bearer", "Basic", "AWS SigV4"]
+                        currentIndex: {
+                            const injection = root.backend.editor.action ? root.backend.editor.action.injection : null
+                            return injection && injection.type === "aws_sigv4" ? 2 : injection && injection.type === "basic" ? 1 : 0
+                        }
                     }
                     TextField { id: injectionUsername; Layout.fillWidth: true; visible: injectionType.currentIndex === 1; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.username || "" : ""; placeholderText: "Basic auth username" }
+                    TextField { id: awsService; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.service || "" : ""; placeholderText: "AWS signing service (e.g. s3 or sts)" }
+                    TextField { id: awsRegion; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.region || "" : ""; placeholderText: "AWS signing region (e.g. us-east-1)" }
                 }
                 Label { visible: !!root.backend.errorFields.action; text: root.backend.errorFields.action || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 Label { visible: root.backend.errorMessage !== ""; text: root.backend.errorMessage; color: "#ff7b7b"; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -251,7 +256,7 @@ Drawer {
                             let action = {type: actionType.currentIndex === 0 ? "allow" : actionType.currentIndex === 1 ? "block" : "allow_with_credential"}
                             if (actionType.currentIndex === 2) {
                                 const credentials = root.backend.credentialsModel.items
-                                action = {type: "allow_with_credential", credential: credentialChoice.currentIndex >= 0 ? credentials[credentialChoice.currentIndex].name : "", path_prefix: pathPrefix.text, injection: injectionType.currentIndex === 0 ? {type: "bearer"} : {type: "basic", username: injectionUsername.text}}
+                                action = {type: "allow_with_credential", credential: credentialChoice.currentIndex >= 0 ? credentials[credentialChoice.currentIndex].name : "", path_prefix: pathPrefix.text, injection: injectionType.currentIndex === 0 ? {type: "bearer"} : injectionType.currentIndex === 1 ? {type: "basic", username: injectionUsername.text} : {type: "aws_sigv4", service: awsService.text, region: awsRegion.text}}
                             }
                             root.backend.saveRule({name: ruleName.text, priority: rulePriority.value, hostname: ruleHost.text, vm_selector: selector, action: action})
                         }

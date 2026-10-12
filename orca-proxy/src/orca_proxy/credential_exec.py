@@ -10,10 +10,13 @@ API exposes is a refresh that forgets the value without running the command.
 
 import asyncio
 import hashlib
+import json
 import os
 import signal
 import time
 from dataclasses import dataclass, field
+
+from orca_proxy.aws_credentials import parse_credentials
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 MAX_OUTPUT_BYTES = 16 * 1024
@@ -50,13 +53,19 @@ class _CredentialState:
     inflight: "asyncio.Future | None" = field(default=None, repr=False)
 
 
-def _validate_output(raw: bytes) -> str:
+def _validate_output(raw: bytes, output_format: str = "header") -> str:
     if len(raw) > MAX_OUTPUT_BYTES:
         raise CredentialExecutionError("invalid_output", "output larger than 16 KiB")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise CredentialExecutionError("invalid_output", "output is not valid UTF-8") from exc
+    if output_format == "aws_process":
+        try:
+            data, _ = parse_credentials(text)
+        except ValueError as exc:
+            raise CredentialExecutionError("invalid_output", str(exc)) from exc
+        return json.dumps(data, separators=(",", ":"))
     if text.endswith("\n"):
         text = text[:-1]
     if not text:
@@ -77,7 +86,7 @@ class CredentialCache:
     def _state(self, name: str) -> _CredentialState:
         return self._states.setdefault(name, _CredentialState())
 
-    async def get_value(self, name: str, command: str, ttl_seconds: int) -> str:
+    async def get_value(self, name: str, command: str, ttl_seconds: int, *, output_format: str = "header") -> str:
         """Return a validated Credential Value, executing (and caching) as needed.
 
         Raises CredentialExecutionError on failure — callers translate this to
@@ -87,17 +96,30 @@ class CredentialCache:
         state = self._state(name)
         now = time.monotonic()
 
+        if output_format == "aws_process" and state.value is not None:
+            try:
+                parse_credentials(state.value)
+            except ValueError:
+                state.value = None
+                state.expires_at = None
+
         if state.value is not None and (state.expires_at is None or now < state.expires_at):
-            return state.value
+            return _validate_output(state.value.encode(), output_format)
 
         if state.inflight is not None:
-            return await asyncio.shield(state.inflight)
+            return _validate_output((await asyncio.shield(state.inflight)).encode(), output_format)
 
         state.status = "refreshing"
         future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
         state.inflight = future
         try:
-            value = await self._execute(state, command)
+            value = await self._execute(state, command, output_format)
+            deadline = None
+            if output_format == "aws_process":
+                try:
+                    _, deadline = parse_credentials(value)
+                except ValueError as exc:
+                    raise CredentialExecutionError("invalid_output", str(exc)) from exc
         except CredentialExecutionError as exc:
             state.status = "error"
             state.last_failure_at = time.time()
@@ -131,6 +153,8 @@ class CredentialCache:
             if ttl_seconds > 0:
                 state.value = value
                 state.expires_at = now + ttl_seconds
+                if deadline is not None:
+                    state.expires_at = min(state.expires_at, time.monotonic() + deadline - time.time())
             state.status = "valid"
             state.last_success_at = time.time()
             state.failure_category = None
@@ -139,7 +163,7 @@ class CredentialCache:
                 future.set_result(value)
             return value
 
-    async def _execute(self, state: _CredentialState, command: str) -> str:
+    async def _execute(self, state: _CredentialState, command: str, output_format: str = "header") -> str:
         proc = await asyncio.create_subprocess_exec(
             "/usr/bin/bash",
             "-lc",
@@ -167,7 +191,7 @@ class CredentialCache:
                     "exit", f"exit status {proc.returncode}", exit_code=proc.returncode
                 )
 
-            return _validate_output(stdout_data)
+            return _validate_output(stdout_data, output_format)
         finally:
             state.process = None
 

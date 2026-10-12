@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -205,3 +206,59 @@ async def test_reject_ignores_a_stale_digest():
     await cache.get_value("c", "echo new", ttl_seconds=3600)
     assert not cache.reject("c", digest("old"))
     assert cache.get_status("c")["status"] == "valid"
+
+
+async def test_aws_process_json_accepts_multiline_and_limits_cache_to_expiration(tmp_path):
+    import json
+    import shlex
+    from datetime import datetime, timezone
+
+    expiration = time.time() + 120
+    value = {"Version": 1, "AccessKeyId": "host-key", "SecretAccessKey": "host-secret", "SessionToken": "host-session", "Expiration": datetime.fromtimestamp(expiration, timezone.utc).isoformat()}
+    output = tmp_path / "aws.json"
+    output.write_text(json.dumps(value, indent=2))
+    cache = CredentialCache()
+    result = await cache.get_value("aws", f"cat {shlex.quote(str(output))}", 3600, output_format="aws_process")
+    assert json.loads(result) == value
+    remaining = cache.get_status("aws")["expires_at"] - time.monotonic()
+    assert 85 < remaining < 91
+    # The file changing does not affect a live cached credential.
+    output.write_text("invalid")
+    assert await cache.get_value("aws", f"cat {shlex.quote(str(output))}", 3600, output_format="aws_process") == result
+    cache.invalidate("aws")
+    with pytest.raises(CredentialExecutionError):
+        await cache.get_value("aws", f"cat {shlex.quote(str(output))}", 3600, output_format="aws_process")
+
+
+@pytest.mark.parametrize("output", [
+    "not-json", "[]", '{}',
+    '{"Version":1,"AccessKeyId":"key","SecretAccessKey":"secret","Expiration":"2000-01-01T00:00:00Z"}',
+    '{"Version":1,"AccessKeyId":"key","SecretAccessKey":"secret","SessionToken":"bad\\nheader"}',
+])
+async def test_invalid_aws_process_credentials_fail_closed(output):
+    import shlex
+    cache = CredentialCache()
+    with pytest.raises(CredentialExecutionError) as error:
+        await cache.get_value("aws", f"printf %s {shlex.quote(output)}", 300, output_format="aws_process")
+    assert error.value.category == "invalid_output"
+    assert cache.get_status("aws")["status"] == "error"
+
+
+async def test_aws_credentials_refresh_when_expiration_approaches(tmp_path, monkeypatch):
+    import json
+    import shlex
+    from datetime import datetime, timezone
+
+    now = time.time()
+    value = {"Version": 1, "AccessKeyId": "first-key", "SecretAccessKey": "secret", "Expiration": datetime.fromtimestamp(now + 120, timezone.utc).isoformat()}
+    output = tmp_path / "aws.json"
+    output.write_text(json.dumps(value))
+    cache = CredentialCache()
+    command = f"cat {shlex.quote(str(output))}"
+    await cache.get_value("aws", command, 3600, output_format="aws_process")
+    value["AccessKeyId"] = "refreshed-key"
+    value["Expiration"] = datetime.fromtimestamp(now + 1000, timezone.utc).isoformat()
+    output.write_text(json.dumps(value))
+    monkeypatch.setattr(time, "time", lambda: now + 95)
+    result = await cache.get_value("aws", command, 3600, output_format="aws_process")
+    assert json.loads(result)["AccessKeyId"] == "refreshed-key"

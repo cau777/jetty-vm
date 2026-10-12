@@ -237,3 +237,20 @@ async def test_delete_rule(client):
     )
     resp = await client.delete("/api/v1/rules/allow-all")
     assert resp.status == 204
+
+
+async def test_aws_sigv4_rule_round_trips_service_and_region(client):
+    await _make_credential(client)
+    injection = {"type": "aws_sigv4", "service": "sts", "region": "us-east-1"}
+    response = await client.put("/api/v1/rules/aws", json={
+        "priority": 10, "vm_selector": {"type": "all"}, "hostname": "sts.us-east-1.amazonaws.com",
+        "action": {"type": "allow_with_credential", "credential": "github-host-login", "path_prefix": "/", "injection": injection},
+    })
+    assert response.status == 201
+    assert (await response.json())["action"]["injection"] == injection
+    for invalid in ({"type": "aws_sigv4"}, {**injection, "region": "*"}, {**injection, "service": ""}, {**injection, "extra": "oops"}):
+        response = await client.put("/api/v1/rules/aws", json={
+            "priority": 10, "vm_selector": {"type": "all"}, "hostname": "sts.us-east-1.amazonaws.com",
+            "action": {"type": "allow_with_credential", "credential": "github-host-login", "path_prefix": "/", "injection": invalid},
+        })
+        assert response.status == 422

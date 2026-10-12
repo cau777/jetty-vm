@@ -31,3 +31,9 @@ other licenses. Its source and license are available at
 mitmproxy and mitmproxy_rs are distributed under their upstream licenses.
 Their source and license files are available at
 <https://github.com/mitmproxy/mitmproxy>.
+
+## Botocore
+
+Botocore supplies AWS Signature Version 4 request signing and is distributed
+under the Apache License 2.0. Its source and license are available at
+<https://github.com/boto/botocore>.

@@ -181,6 +181,20 @@ def _validate_injection(value: object) -> dict:
             fields={"action": "injection must be an object"},
         )
     injection_type = value.get("type")
+    if injection_type == "aws_sigv4":
+        if set(value) != {"type", "service", "region"}:
+            raise ValidationFailed(
+                "AWS SigV4 injection requires exactly 'type', 'service', and 'region'",
+                fields={"action": "unexpected/missing fields for AWS SigV4"},
+            )
+        for key in ("service", "region"):
+            item = value[key]
+            if not isinstance(item, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", item):
+                raise ValidationFailed(
+                    f"'action.injection.{key}' must be a lowercase AWS signing identifier",
+                    fields={"action": f"invalid AWS signing {key}"},
+                )
+        return {"type": "aws_sigv4", "service": value["service"], "region": value["region"]}
     if injection_type == "bearer":
         if set(value.keys()) != {"type"}:
             raise ValidationFailed(
@@ -202,6 +216,6 @@ def _validate_injection(value: object) -> dict:
             )
         return {"type": "basic", "username": username}
     raise ValidationFailed(
-        "'action.injection.type' must be 'bearer' or 'basic'",
+        "'action.injection.type' must be 'bearer', 'basic', or 'aws_sigv4'",
         fields={"action": "invalid injection type"},
     )

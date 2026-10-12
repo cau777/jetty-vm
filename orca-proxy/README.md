@@ -56,6 +56,68 @@ jetty vm reverse-port close my-agent 5432        # by VM port
 
 Run `jetty --help` and `jetty vm --help` for the other lifecycle operations.
 
+## AWS CLI authentication
+
+Create a Credential whose bash command prints AWS process-format JSON. The
+desktop's **AWS host profile** Quick Add template starts with:
+
+```bash
+aws configure export-credentials --profile default --format process
+```
+
+Change `default` to a dedicated host profile with the IAM permissions the VM
+needs. Acquisition and provider refresh stay in that bash command; any required
+interactive login happens on the host. A custom command can emit the same
+[AWS process credential format](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html):
+`Version: 1`, `AccessKeyId`, `SecretAccessKey`, optional `SessionToken`, and
+optional timezone-qualified `Expiration`. Pretty-printed JSON is accepted for
+AWS injection. The value stays in memory, cached for the configured TTL or
+until 30 seconds before expiration, whichever is sooner. TTL zero disables
+caching. Bearer and Basic commands still require a single-line value.
+
+Create an Allow-with-credential rule for the VM and exact AWS endpoint. Choose
+**AWS SigV4** in the rule editor and specify its signing service and region.
+For example, an STS rule action is:
+
+```json
+{
+  "type": "allow_with_credential",
+  "credential": "aws-host-profile",
+  "path_prefix": "/",
+  "injection": {"type": "aws_sigv4", "service": "sts", "region": "us-east-1"}
+}
+```
+
+Use `sts.us-east-1.amazonaws.com` as that rule's hostname. Configure AWS CLI
+inside the VM with dummy credentials and the system bundle containing Jetty's
+public CA:
+
+```bash
+export AWS_ACCESS_KEY_ID=jetty-placeholder
+export AWS_SECRET_ACCESS_KEY=jetty-placeholder
+export AWS_DEFAULT_REGION=us-east-1
+export AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+export AWS_EC2_METADATA_DISABLED=true
+unset AWS_SESSION_TOKEN
+aws sts get-caller-identity --endpoint-url https://sts.us-east-1.amazonaws.com
+```
+
+The proxy replaces guest authentication, recomputes the payload hash, and
+signs the outgoing request using the rule's service and region. Add rules for
+each endpoint needed, including S3 bucket endpoints and redirect destinations.
+IAM controls allowed operations and resources: many AWS APIs share the same
+hostname and `/` path. Avoid IAM permissions that allow the VM to mint or
+retrieve further credentials if those must also stay outside the VM.
+
+Requests are buffered for signing. AWS streaming uploads (`aws-chunked` or
+`STREAMING-*` payload hashes), SigV4a, and presigned request URLs receive a
+proxy error. For ordinary S3 uploads, setting
+`AWS_REQUEST_CHECKSUM_CALCULATION=when_required` in the VM avoids optional
+checksum trailers; explicitly requested or required trailers remain unsupported.
+See [AWS checksum configuration](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html).
+Generating a presigned URL locally with dummy VM credentials produces an
+unusable URL because there is no outgoing request for the proxy to sign.
+
 ## Development
 
 ```bash

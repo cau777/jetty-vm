@@ -446,3 +446,62 @@ async def test_upstream_401_drops_the_cached_credential(addon, tmp_path):
     second = _flow_for(addon, data.context.client)
     await addon.request(second)
     assert second.request.headers["Authorization"] == "Bearer token-2"
+
+
+def _aws_flow(addon, command):
+    _put_vm(addon)
+    _put_credential(addon, name="aws", command=command)
+    _put_rule(addon, "aws-sts", 10, "sts.us-east-1.amazonaws.com", {
+        "type": "allow_with_credential", "credential": "aws", "path_prefix": "/",
+        "injection": {"type": "aws_sigv4", "service": "sts", "region": "us-east-1"},
+    })
+    hello = _client_hello_data(addon, sni="sts.us-east-1.amazonaws.com")
+    addon.tls_clienthello(hello)
+    flow = _flow_for(addon, hello.context.client, path="/", host="sts.us-east-1.amazonaws.com", method="POST")
+    flow.request.scheme = "https"
+    flow.request.port = 443
+    flow.request.headers["Host"] = "sts.us-east-1.amazonaws.com"
+    flow.request.content = b"Action=GetCallerIdentity&Version=2011-06-15"
+    flow.request.headers["Authorization"] = "AWS4-HMAC-SHA256 guest-signature"
+    return flow
+
+
+async def test_aws_rule_executes_host_command_signs_request_and_redacts_logs(addon):
+    import json
+    import shlex
+    from mitmproxy import http
+
+    value = {"Version": 1, "AccessKeyId": "host-key", "SecretAccessKey": "host-secret", "SessionToken": "host-session"}
+    flow = _aws_flow(addon, f"printf %s {shlex.quote(json.dumps(value, indent=2))}")
+    await addon.request(flow)
+    assert flow.response is None
+    assert "Credential=host-key/" in flow.request.headers["Authorization"]
+    assert "/us-east-1/sts/aws4_request" in flow.request.headers["Authorization"]
+    assert flow.request.headers["X-Amz-Security-Token"] == "host-session"
+    assert flow.request.content == b"Action=GetCallerIdentity&Version=2011-06-15"
+    flow.response = http.Response.make(200, b"ok")
+    addon.response(flow)
+    # Neither injected authentication header may appear in stored log values.
+    rows = addon._requests_conn.execute("SELECT * FROM http_requests").fetchall()
+    assert rows
+    assert "host-session" not in str([tuple(row) for row in rows])
+    assert "host-secret" not in str([tuple(row) for row in rows])
+    assert "host-key" not in str([tuple(row) for row in rows])
+
+
+async def test_aws_invalid_command_output_returns_502(addon):
+    flow = _aws_flow(addon, "echo invalid")
+    await addon.request(flow)
+    assert flow.response.status_code == 502
+    assert b"credential_unavailable" in flow.response.content
+    assert flow.request.headers["Authorization"] == "AWS4-HMAC-SHA256 guest-signature"
+
+
+async def test_aws_streaming_request_is_rejected_without_executing_command(addon, tmp_path):
+    import shlex
+    marker = tmp_path / "executed"
+    flow = _aws_flow(addon, f"touch {shlex.quote(str(marker))}")
+    flow.request.headers["X-Amz-Content-SHA256"] = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+    await addon.request(flow)
+    assert flow.response.status_code == 400
+    assert not marker.exists()
