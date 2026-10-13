@@ -1,39 +1,59 @@
 ---
 name: orca-ssh-setup
-description: Set up a Jetty-managed LXD VM as an SSH run target for the current project, install its toolchain and requested coding-agent harnesses, and connect it to Orca as an SSH project.
+description: Configure or maintain Jetty-managed LXD VMs, install packages or coding-agent harnesses, change VM resources, or prepare repositories and Orca SSH targets.
 ---
 
-# Orca SSH Project Setup
+# Jetty VM Configuration
 
-Use this procedure when the user wants to run their current repo's Orca agents
-on a dedicated local VM instead of their laptop, connected via SSH (Orca's
-"SSH target" run mode — see https://www.onorca.dev/docs/ways-to-run, mode #2).
+A VM can serve multiple repositories or have no repository. The provisioning
+agent runs on the host in a temporary folder; its working directory is not a
+project checkout. Use `JETTY_CLI` when supplied by the app.
 
-Scope note: this is **one long-lived VM per project**, reused across
-worktrees/branches.
+## Choose the task
 
-The end state: a running LXD VM, reachable over SSH with key-based auth
-(through the Jetty gateway VM), with the project's toolchain **and** the
-requested coding-agent harness(es) installed, its outbound traffic
-transparently enforced by the host-side **orca-proxy** service (no explicit
-proxy configuration inside the VM), and
-the user knows exactly what to click/type in Orca to register it and start a
-worktree on it.
+For an app handoff without a user task, ask what they want to do with the
+selected VM and wait for their answer. Examples: configure repo X, install
+Docker, or increase CPU allocation. When the user already supplied a task,
+proceed with it and ask only for missing choices.
 
-For a Jetty app handoff, the VM already exists. Use the supplied name and
-`JETTY_CLI`, confirm it with `jetty vm list`, and inspect its installed tools
-before changing it. Keep its name, image, resources, and existing configuration.
-The host agent chosen in Jetty is the provisioning agent; it does not imply
-that the same harness should be installed inside the VM.
+Confirm the selected VM with `jetty vm list` and inspect the current state
+relevant to the task. Reuse the existing VM, packages, credentials, Rules,
+and checkouts. Preserve unrelated configuration. The host provisioning agent
+choice does not imply installing that harness in the guest.
 
-Work through the steps below, asking only for choices that remain unresolved.
-For a new VM, settle its name, resources, and image before creation. Configure
-credentials, Rules, and guest authentication in step 6 before cloning a private
-repository or installing dependencies that require those credentials.
+Choose only the sections needed for the requested outcome; the numbered
+sections below are reference procedures, not a mandatory sequence:
+
+- **Repository setup:** resolve the requested repository URL or local path
+  and guest destination. Inspect an existing guest checkout first; clone or
+  transfer only if a checkout is needed and absent. Inspect its pins and build
+  configuration using section 1, then install the required tools and validate
+  the project. Prepare required credentials and Rules before private clones
+  or authenticated dependency installs. Register an Orca SSH target only when
+  requested.
+- **Package installation:** inspect the guest OS and installed package, use
+  `jetty vm exec` to install/configure the requested software, and verify its
+  version and requested service behavior. A Docker request does not imply
+  cloning a repository or installing coding-agent harnesses.
+- **Resource changes:** inspect current host capacity and VM configuration,
+  establish the requested CPU/memory/disk value, and inspect CLI capabilities
+  with `jetty vm --help`. If Jetty lacks a resize command, use the host LXD
+  tooling for the existing VM in the `jetty` project, after inspecting its
+  configuration and the tool's help. Check whether applying the change needs
+  a stop/restart and obtain permission for downtime before interrupting it.
+  Verify both persisted configuration and guest-visible resources after the
+  change. Keep the VM and its data in place.
+- **New VM or full SSH setup:** use the applicable sections below; settle
+  name, image and resources before creation. A VM need not be tied to a repo.
+
+Completion means verifying the requested outcome and reporting changes and
+any remaining limitation. Stop there rather than continuing into unrelated
+setup sections. Existing proxy/gateway configuration needs only the checks
+or repairs relevant to the task, not a full reinstall.
 
 ## 1. Inspect the current repo to determine required technologies
 
-From the repo root, gather enough signal to know what the VM needs installed.
+For repository setup, from the selected checkout, gather enough signal to know what the VM needs installed.
 Look for (not exhaustive — adapt to what you find):
 
 - **Language/runtime version pins**: `.python-version`, `.nvmrc`,
@@ -96,7 +116,8 @@ with independent configuration while any remaining choices are pending.
 
 ## 3. Set up the host-side orca-proxy service and register Credentials
 
-Always do 3a and 3b: every Jetty VM depends on orca-proxy and the gateway.
+For new VM setup, do 3a and 3b. For an existing VM, verify the proxy and
+gateway and repair them only when needed for the task.
 Skip 3c and 3d if step 2 established the VM needs no coding-agent harness and
 no GitHub access.
 
@@ -592,18 +613,18 @@ Codex-only setups, or the configured GitHub host when no harness is installed).
 Inspect the certificate issuer and Jetty request logs to confirm interception;
 a successful curl alone also succeeds on unintercepted public TLS.
 
-After the GitHub subsection below has prepared any private clone, verify the
+Verify the
 whole chain with one real call per requested harness — fail loudly
 here rather than let the user discover a bare auth error on the harness's
 first real turn:
 
 ```bash
 "$JETTY" vm exec <vm-name> -- bash -lc 'claude -p "say ok" --output-format text'
-"$JETTY" vm exec <vm-name> -- bash -lc 'cd ~/<reponame> && codex exec "say ok"'
+"$JETTY" vm exec <vm-name> -- bash -lc 'codex exec --skip-git-repo-check "say ok"'
 ```
 
 (`codex exec` refuses to run outside a git repository unless given
-`--skip-git-repo-check`, so run it from the clone.)
+`--skip-git-repo-check`, so use that flag for this repository-independent smoke check.)
 
 If either fails, check `curl "${API%/api/v1}/readyz"` and that
 Credential's live status on the host first (see also step 8) — a down service or an invalid
@@ -750,7 +771,7 @@ Once required Rules and guest authentication are configured, complete the
 clone or local transfer from step 4, install dependencies, and run the project's
 normal build/test command. For private GitHub clones, use HTTPS with the exact
 repository path covered by the git Rule; SSH remotes bypass that credential
-injection. Prepare the clone before running the harness checks that use it.
+injection. Harness smoke checks can run independently of a checkout.
 If no credentialed access was requested, complete this setup directly.
 
 ### Reach a development server from the host

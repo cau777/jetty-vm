@@ -805,7 +805,7 @@ class DesktopBackend(QObject):
     @Slot(str, str, str)
     def handoff(self, vm_name: str, agent: str, project_dir: str) -> None:
         if self._demo:
-            self._handoff_message = f"Preview only: would open {agent} for {vm_name} in {project_dir}."
+            self._handoff_message = f"Preview only: would open {agent} for {vm_name} in a temporary folder."
             self.messageChanged.emit()
             return
         self._handoff_message = f"Opening {agent} for {vm_name}…"
@@ -816,7 +816,7 @@ class DesktopBackend(QObject):
             self._handoff_message = result.get("message", f"{agent} terminal opened for {vm_name}.") if ok else result.get("message", "Could not open the agent terminal.")
             self.messageChanged.emit()
 
-        self._request("POST", path, {"agent": agent, "project_dir": project_dir}, complete)
+        self._request("POST", path, {"agent": agent}, complete)
 
     @Slot()
     def showSetup(self) -> None:

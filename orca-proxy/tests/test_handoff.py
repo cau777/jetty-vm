@@ -1,6 +1,7 @@
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -40,11 +41,15 @@ async def test_handoff_opens_terminal_and_installs_missing_skill(client, launche
     assert resp.status == 202
     assert body["skill_install"] is True
     assert body["terminal"] == "ptyxis"
-    assert body["project_dir"] == str(home)
+    workspace = Path(body["project_dir"])
+    assert workspace.is_dir()
+    assert workspace.name.startswith("jetty-handoff-")
+    assert not (workspace / ".git").exists()
+    assert calls[0][1]["cwd"] == workspace
     argv = calls[0][0]
     assert argv[:3] == ["/usr/bin/ptyxis", "--", "/bin/bash"]
     # project dir, install flag, skill source, skills agent id, agent command, prompt
-    assert argv[6:9] == [str(home), "1", str(home / ".local/share/jetty/orca-ssh-setup")]
+    assert argv[6:9] == [str(workspace), "1", str(home / ".local/share/jetty/orca-ssh-setup")]
     assert argv[9:12] == ["claude-code", str(jetty), "claude"]
     assert "'proj-vm'" in argv[12] and "10.202.0.21" in argv[12]
     assert f"`{shlex.quote(str(jetty))} vm list`" in argv[12]
@@ -64,7 +69,9 @@ async def test_handoff_skips_install_when_agent_has_current_skill(client, launch
     assert resp.status == 202
     assert (await resp.json())["skill_install"] is False
     argv = calls[0][0]
-    assert argv[6:8] == [str(project), "0"]
+    assert Path(argv[6]).is_dir()
+    assert argv[6] != str(project)
+    assert argv[7] == "0"
     assert argv[9] == "opencode"
     assert argv[11:13] == ["opencode", "--prompt"]
 
@@ -127,3 +134,30 @@ def test_jetty_executable_prefers_the_appimage(monkeypatch, tmp_path):
 def test_jetty_executable_from_source_uses_the_console_script(monkeypatch):
     monkeypatch.delenv("APPIMAGE", raising=False)
     assert handoff.jetty_executable() == handoff.Path(handoff.sys.executable).with_name("jetty")
+
+
+def test_launch_uses_distinct_workspaces_and_cleans_up_on_failure(launched, monkeypatch):
+    _home, calls = launched
+    first = handoff.launch("codex", "vm", "10.202.0.21")
+    second = handoff.launch("codex", "vm", "10.202.0.21")
+    assert first["project_dir"] != second["project_dir"]
+    assert calls[0][0][11] == "codex"
+    def fail(argv, **kwargs):
+        calls.append((argv, kwargs))
+        raise OSError("terminal failed")
+    monkeypatch.setattr(handoff.subprocess, "run", fail)
+    with pytest.raises(handoff.ServiceUnavailable):
+        handoff.launch("codex", "vm", "10.202.0.21")
+    assert not calls[-1][1]["cwd"].exists()
+    for result in (first, second):
+        shutil.rmtree(result["project_dir"])
+
+
+def test_systemd_launch_uses_temporary_workspace(launched, monkeypatch):
+    _home, calls = launched
+    previous = handoff.shutil.which
+    monkeypatch.setattr(handoff.shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else previous(name))
+    result = handoff.launch("pi", "vm", "10.202.0.21")
+    assert f"--working-directory={result['project_dir']}" in calls[0][0]
+    assert calls[0][1]["cwd"] == Path(result["project_dir"])
+    shutil.rmtree(result["project_dir"])

@@ -1,4 +1,4 @@
-"""Hand a freshly created VM to a coding agent in a host terminal.
+"""Hand a Jetty VM to a coding agent in a host terminal.
 
 The daemon runs under the systemd user manager, whose PATH usually lacks the
 user's node/nvm setup, so the skill install and the agent launch both run in
@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,7 +54,7 @@ _TERMINALS = (
     ("x-terminal-emulator", ("-e",)),
 )
 
-# $1 project dir, $2 install flag, $3 skill source, $4 skills agent id, $5 jetty
+# $1 temporary workspace, $2 install flag, $3 skill source, $4 skills agent id, $5 jetty
 # executable, $6... agent command
 _SCRIPT = r"""
 cd "$1" || { echo "Cannot open $1"; read -r _; exit 1; }
@@ -131,10 +132,15 @@ def jetty_executable() -> Path:
 
 def prompt(vm_name: str, ip_address: str, jetty: Path) -> str:
     return (
-        f"Use the orca-ssh-setup skill to prepare the Jetty VM '{vm_name}' for the project in this "
-        f"directory. The Jetty app already created and started it (address {ip_address}, SSH host "
-        f"alias {vm_name}), so do not create a new VM: confirm it with `{shlex.quote(str(jetty))} vm list` "
-        f"and continue from there. Jetty's CLI is {jetty} (also exported as $JETTY_CLI). Start with step 1."
+        f"Use the orca-ssh-setup skill to help manage the existing Jetty VM '{vm_name}' "
+        f"(address {ip_address}, SSH host alias {vm_name}). "
+        f"Jetty's CLI is {jetty} (also exported as $JETTY_CLI). "
+        "You are in a temporary host folder, independent of any repository. "
+        "Start by asking what the user wants to do with this VM, for example configure a repo, "
+        "install Docker, or increase CPU allocation. Wait for their answer before making changes. "
+        f"Then confirm the VM with `{shlex.quote(str(jetty))} vm list` and inspect only what "
+        "the task needs. Reuse this VM and existing checkouts; clone a repository only when "
+        "the requested task needs one."
     )
 
 
@@ -167,7 +173,8 @@ def project_directory(raw: object) -> Path:
     return path.resolve()
 
 
-def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path) -> dict:
+def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path | None = None) -> dict:
+    """Launch in an isolated folder; project_dir is retained for API compatibility."""
     agent = AGENTS.get(agent_key)
     if agent is None:
         raise ValidationFailed(
@@ -177,9 +184,11 @@ def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path) -> 
     install = not skill_current(agent, skill)
     terminal, prefix = _find_terminal()
     jetty = jetty_executable()
+    # Retain the folder so sessions can outlive the daemon and resume here.
+    workspace = Path(tempfile.mkdtemp(prefix="jetty-handoff-"))
     shell_command = [
         _login_shell(), "-lic", _SCRIPT, "jetty-handoff",
-        str(project_dir), "1" if install else "0", str(skill), agent.skills_id, str(jetty),
+        str(workspace), "1" if install else "0", str(skill), agent.skills_id, str(jetty),
         *agent.command, prompt(vm_name, ip_address, jetty),
     ]
     command = [terminal, *prefix, *shell_command]
@@ -188,12 +197,13 @@ def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path) -> 
         # A transient unit keeps the terminal alive across daemon restarts.
         command = [
             systemd_run, "--user", "--collect", "--quiet",
-            f"--unit=jetty-handoff-{secrets.token_hex(4)}", f"--working-directory={project_dir}",
+            f"--unit=jetty-handoff-{secrets.token_hex(4)}", f"--working-directory={workspace}",
             *command,
         ]
     try:
-        subprocess.run(command, check=True, capture_output=True, timeout=15, cwd=project_dir)
+        subprocess.run(command, check=True, capture_output=True, timeout=15, cwd=workspace)
     except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(workspace, ignore_errors=True)
         detail = getattr(exc, "stderr", b"") or b""
         message = detail.decode(errors="replace").strip() or str(exc)
         raise ServiceUnavailable(f"Could not open a terminal: {message}") from exc
@@ -202,6 +212,6 @@ def launch(agent_key: str, vm_name: str, ip_address: str, project_dir: Path) -> 
         "label": agent.label,
         "skill_install": install,
         "terminal": Path(terminal).name,
-        "project_dir": str(project_dir),
+        "project_dir": str(workspace),
         "jetty": str(jetty),
     }

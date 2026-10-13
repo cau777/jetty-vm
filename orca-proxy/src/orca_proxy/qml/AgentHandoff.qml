@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
-import QtQuick.Dialogs
 import QtQuick.Layouts
 
 ColumnLayout {
@@ -10,27 +9,9 @@ ColumnLayout {
     required property string vmName
     spacing: 8
 
-    FolderDialog {
-        id: folderDialog
-        currentFolder: "file://" + encodeURI(root.backend.projectDir || root.backend.homeDir)
-        onAccepted: root.backend.setProjectDir(selectedFolder.toLocalFile())
-    }
-
-    Label { text: "Project folder"; color: "#8793a5"; font.pixelSize: 11 }
-    RowLayout {
-        Layout.fillWidth: true
-        TextField {
-            Layout.fillWidth: true
-            text: root.backend.projectDir
-            placeholderText: "Home folder if empty"
-            font.family: "monospace"
-            onTextEdited: root.backend.setProjectDir(text)
-        }
-        JettyButton { text: "Browse…"; flat: true; onClicked: folderDialog.open() }
-    }
     Label {
         Layout.fillWidth: true
-        text: "The agent starts here, reads the project and prepares this VM."
+        text: "The agent opens in a temporary folder and asks what you want to do with this VM."
         color: "#8793a5"
         wrapMode: Text.Wrap
         font.pixelSize: 11
@@ -45,7 +26,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 text: modelData.label
                 enabled: !root.backend.handoffMessage.startsWith("Opening ")
-                onClicked: root.backend.handoff(root.vmName, modelData.key, root.backend.projectDir)
+                onClicked: root.backend.handoff(root.vmName, modelData.key, "")
             }
         }
     }
