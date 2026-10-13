@@ -49,7 +49,7 @@ are durable. The live value lives only in the in-memory `CredentialCache`
 name              TEXT PRIMARY KEY
 priority          INTEGER UNIQUE   -- ascending; sole tiebreaker among matches
 vm_selector_json  TEXT             -- {"type":"all"} | {"type":"only","vms":[...]}
-hostname          TEXT             -- bare hostname, no scheme/port/path/wildcard
+hostname          TEXT             -- hostname or leading *. suffix, no scheme/port/path
 action_json       TEXT             -- discriminated union, see below
 created_at / updated_at
 ```
@@ -136,7 +136,7 @@ are reported by `deploy/jetty-lxd status`: the proxy never talks to LXD.
 ## Validation rules (#9, `validation.py`)
 
 - **Names**: immutable lowercase slugs — `^[a-z0-9][a-z0-9-]{0,62}$`.
-- **Hostnames**: lowercase, trailing dot stripped, reject scheme/port/path/wildcard.
+- **Hostnames**: lowercase, trailing dot stripped, reject scheme/port/path; allow only a leading `*.` wildcard.
 - **Path prefixes** (Allow-with-credential only): must start with `/`; reject
   `.`/`..` segments, percent-encoding, and empty segments (`is_safe_absolute_path`)
   — the same check is reused live at request-match time (#5 step 7), so a
@@ -248,8 +248,9 @@ mitmproxy/aiohttp import) so it's directly unit-testable and shared between
 the proxy core and (conceptually) the logging layer.
 
 1. Candidate rules = those whose `vm_selector` selects the connecting VM
-   *and* whose `hostname` exactly matches the canonicalized incoming
-   SNI/Host — no wildcard/subdomain matching.
+   *and* whose `hostname` matches the canonicalized incoming SNI/Host.
+   Exact matches and leading `*.` suffix matches are supported. The latter
+   includes subdomains at any depth, excluding the parent domain itself.
 2. Candidates are ordered by ascending `priority` — the sole tiebreaker;
    duplicate priorities are rejected at write time so this is never
    ambiguous. There is no separate specificity rule.

@@ -196,3 +196,19 @@ def test_no_matching_rules_defaults_allow():
     decision = evaluate_request([], "skills-dev", "github.com", "/anything")
     assert decision.outcome == ALLOW_DEFAULT
     assert decision.trace == []
+
+
+def test_wildcard_intercepts_and_selects_credentials_for_subdomains():
+    rules = [_awc('aws', 10, '*.us-east-1.amazonaws.com', 'aws', '/', vms=['secure-stack'])]
+    for host in ('ecs.us-east-1.amazonaws.com', 'bucket.s3.us-east-1.amazonaws.com'):
+        assert evaluate_connection(rules, 'secure-stack', host).intercepted
+        assert evaluate_request(rules, 'secure-stack', host, '/').credential == 'aws'
+    for host in ('us-east-1.amazonaws.com', 'ecs.us-east-1.amazonaws.com.evil.com', 'ecs.us-west-2.amazonaws.com'):
+        assert not evaluate_connection(rules, 'secure-stack', host).intercepted
+    assert not evaluate_connection(rules, 'other-vm', 'ecs.us-east-1.amazonaws.com').intercepted
+
+
+def test_wildcard_and_exact_rules_follow_priority():
+    rules = [_allow('exception', 1, 'ecs.us-east-1.amazonaws.com'),
+             _awc('aws', 10, '*.us-east-1.amazonaws.com', 'aws', '/')]
+    assert evaluate_connection(rules, 'vm', 'ecs.us-east-1.amazonaws.com').outcome == ALLOW_RULE

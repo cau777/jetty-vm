@@ -183,7 +183,7 @@ Drawer {
                     Item { Layout.fillWidth: true }
                 }
                 Label { visible: !!root.backend.errorFields.priority; text: root.backend.errorFields.priority || ""; color: "#ff7b7b"; font.pixelSize: 11 }
-                TextField { id: ruleHost; Layout.fillWidth: true; text: root.backend.editor.hostname || ""; placeholderText: "Exact hostname, such as api.github.com" }
+                TextField { id: ruleHost; Layout.fillWidth: true; text: root.backend.editor.hostname || ""; placeholderText: "Hostname, e.g. api.github.com or *.us-east-1.amazonaws.com" }
                 Label { visible: !!root.backend.errorFields.hostname; text: root.backend.errorFields.hostname || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 Label { text: "VM selector"; color: "#8793a5"; font.pixelSize: 11 }
                 ComboBox {
@@ -239,7 +239,8 @@ Drawer {
                         }
                     }
                     TextField { id: injectionUsername; Layout.fillWidth: true; visible: injectionType.currentIndex === 1; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.username || "" : ""; placeholderText: "Basic auth username" }
-                    TextField { id: awsService; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.service || "" : ""; placeholderText: "AWS signing service (e.g. s3 or sts)" }
+                    TextField { id: awsService; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.service || "" : ""; placeholderText: "AWS signing service: auto, s3, sts, etc." }
+                    Label { visible: injectionType.currentIndex === 2; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: "Use auto to select the signing service for known AWS endpoints in the configured region."; color: "#9ca3af"; font.pixelSize: 11 }
                     TextField { id: awsRegion; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.region || "" : ""; placeholderText: "AWS signing region (e.g. us-east-1)" }
                 }
                 Label { visible: !!root.backend.errorFields.action; text: root.backend.errorFields.action || ""; color: "#ff7b7b"; font.pixelSize: 11 }

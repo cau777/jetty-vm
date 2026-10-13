@@ -30,9 +30,9 @@ def validate_ip_address(value: object, field: str = "ip_address") -> str:
 def validate_hostname(value: object, field: str = "hostname") -> str:
     if not isinstance(value, str) or not value:
         raise ValidationFailed(f"'{field}' is required", fields={field: "required"})
-    if "://" in value or "/" in value or "*" in value:
+    if "://" in value or "/" in value:
         raise ValidationFailed(
-            f"'{field}' must be a bare hostname (no scheme, path, or wildcard)",
+            f"'{field}' must be a hostname (no scheme or path)",
             fields={field: "must be a bare hostname"},
         )
     normalized = value.lower()
@@ -41,7 +41,8 @@ def validate_hostname(value: object, field: str = "hostname") -> str:
     host, _, port = normalized.partition(":")
     if port:
         raise ValidationFailed(f"'{field}' must not include a port", fields={field: "must not include a port"})
-    if not _HOSTNAME_RE.match(host):
+    bare_host = host[2:] if host.startswith("*.") else host
+    if not _HOSTNAME_RE.fullmatch(bare_host):
         raise ValidationFailed(f"'{field}' is not a valid hostname", fields={field: "not a valid hostname"})
     return host
 

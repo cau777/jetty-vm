@@ -50,6 +50,13 @@ def _selects_vm(vm_selector: dict, vm_name: str) -> bool:
     return vm_name in vm_selector["vms"]
 
 
+def _matches_hostname(pattern: str, hostname: str) -> bool:
+    if pattern.startswith("*."):
+        # The dot boundary excludes the apex and lookalike suffixes.
+        return hostname.endswith(pattern[1:]) and len(hostname) > len(pattern[1:])
+    return pattern == hostname
+
+
 def _candidates(rules: list[dict], vm_name: str, hostname: str) -> list[dict]:
     """Rules whose VM selector and hostname match, in ascending priority order.
 
@@ -60,7 +67,7 @@ def _candidates(rules: list[dict], vm_name: str, hostname: str) -> list[dict]:
     matched = [
         rule
         for rule in rules
-        if rule["hostname"] == hostname and _selects_vm(rule["vm_selector"], vm_name)
+        if _matches_hostname(rule["hostname"], hostname) and _selects_vm(rule["vm_selector"], vm_name)
     ]
     return sorted(matched, key=lambda r: r["priority"])
 

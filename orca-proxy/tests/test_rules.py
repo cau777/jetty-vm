@@ -254,3 +254,26 @@ async def test_aws_sigv4_rule_round_trips_service_and_region(client):
             "action": {"type": "allow_with_credential", "credential": "github-host-login", "path_prefix": "/", "injection": invalid},
         })
         assert response.status == 422
+
+
+async def test_wildcard_aws_rule_round_trips(client):
+    await _make_credential(client)
+    response = await client.put('/api/v1/rules/regional-aws', json={
+        'priority': 10, 'vm_selector': {'type': 'all'},
+        'hostname': '*.US-EAST-1.AMAZONAWS.COM.',
+        'action': {'type': 'allow_with_credential', 'credential': 'github-host-login',
+                   'path_prefix': '/', 'injection': {'type': 'aws_sigv4', 'service': 'auto', 'region': 'us-east-1'}},
+    })
+    assert response.status == 201
+    rule = await response.json()
+    assert rule['hostname'] == '*.us-east-1.amazonaws.com'
+    assert rule['action']['injection']['service'] == 'auto'
+
+
+async def test_only_leading_label_wildcard_is_accepted(client):
+    for hostname in ('*', '*amazonaws.com', 'ecs.*.amazonaws.com', '*.*.amazonaws.com', '*.amazonaws.com:443', '*.'):
+        response = await client.put('/api/v1/rules/invalid', json={
+            'priority': 10, 'vm_selector': {'type': 'all'}, 'hostname': hostname,
+            'action': {'type': 'allow'},
+        })
+        assert response.status == 422, hostname

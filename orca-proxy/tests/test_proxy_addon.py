@@ -497,11 +497,68 @@ async def test_aws_invalid_command_output_returns_502(addon):
     assert flow.request.headers["Authorization"] == "AWS4-HMAC-SHA256 guest-signature"
 
 
+async def test_aws_transparent_destination_ip_is_signed_for_tls_hostname(addon):
+    import json
+    import shlex
+    value = {"Version": 1, "AccessKeyId": "host-key", "SecretAccessKey": "host-secret"}
+    flow = _aws_flow(addon, f"printf %s {shlex.quote(json.dumps(value))}")
+    # mitmproxy transparent mode puts the original destination IP in .host,
+    # while preserving the AWS hostname in the HTTP Host header and TLS SNI.
+    flow.request.data.host = "52.94.228.167"
+    await addon.request(flow)
+    assert flow.response is None
+    assert "Credential=host-key/" in flow.request.headers["Authorization"]
+    assert flow.request.headers["Host"] == "sts.us-east-1.amazonaws.com"
+    assert flow.request.host == "52.94.228.167"
+
+
 async def test_aws_streaming_request_is_rejected_without_executing_command(addon, tmp_path):
     import shlex
     marker = tmp_path / "executed"
     flow = _aws_flow(addon, f"touch {shlex.quote(str(marker))}")
     flow.request.headers["X-Amz-Content-SHA256"] = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+    await addon.request(flow)
+    assert flow.response.status_code == 400
+    assert not marker.exists()
+
+
+async def test_wildcard_aws_rule_intercepts_and_signs_multiple_services(addon):
+    import json
+    import shlex
+    value = {'Version': 1, 'AccessKeyId': 'host-key', 'SecretAccessKey': 'host-secret'}
+    _put_vm(addon)
+    _put_credential(addon, name='aws', command=f'printf %s {shlex.quote(json.dumps(value))}')
+    _put_rule(addon, 'regional-aws', 10, '*.us-east-1.amazonaws.com', {
+        'type': 'allow_with_credential', 'credential': 'aws', 'path_prefix': '/',
+        'injection': {'type': 'aws_sigv4', 'service': 'auto', 'region': 'us-east-1'},
+    })
+    for service in ('sts', 'ecs'):
+        hostname = f'{service}.us-east-1.amazonaws.com'
+        hello = _client_hello_data(addon, sni=hostname)
+        addon.tls_clienthello(hello)
+        assert hello.ignore_connection is False
+        flow = _flow_for(addon, hello.context.client, path='/', host=hostname, method='POST')
+        flow.request.scheme = 'https'
+        flow.request.port = 443
+        flow.request.headers['Host'] = hostname
+        flow.request.content = b'{}'
+        await addon.request(flow)
+        assert flow.response is None
+        assert f'/us-east-1/{service}/aws4_request' in flow.request.headers['Authorization']
+
+
+async def test_auto_aws_unknown_endpoint_rejected_before_credentials_execute(addon, tmp_path):
+    import shlex
+    marker = tmp_path / 'executed'
+    flow = _aws_flow(addon, f'touch {shlex.quote(str(marker))}')
+    addon._state_conn.execute("UPDATE rules SET hostname=?, action_json=? WHERE name='aws-sts'", (
+        '*.us-east-1.amazonaws.com',
+        '{"type":"allow_with_credential","credential":"aws","path_prefix":"/","injection":{"type":"aws_sigv4","service":"auto","region":"us-east-1"}}',
+    ))
+    hostname = 'unknown.us-east-1.amazonaws.com'
+    flow.client_conn.orca_sni = hostname
+    flow.request.host = hostname
+    flow.request.headers['Host'] = hostname
     await addon.request(flow)
     assert flow.response.status_code == 400
     assert not marker.exists()

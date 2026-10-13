@@ -71,3 +71,28 @@ def test_unsupported_requests_are_rejected_before_mutation(headers):
 def test_presigned_plaintext_and_wrong_destinations_are_rejected(url, hostname):
     with pytest.raises(UnsupportedAWSRequest):
         sign_request(http.Request.make("GET", url), hostname, INJECTION, VALUE)
+
+
+@pytest.mark.parametrize('hostname,service', [
+    ('ecs.us-east-1.amazonaws.com', 'ecs'),
+    ('sts.us-east-1.amazonaws.com', 'sts'),
+    ('monitoring.us-east-1.amazonaws.com', 'monitoring'),
+    ('bucket.s3.us-east-1.amazonaws.com', 's3'),
+    ('api-id.execute-api.us-east-1.amazonaws.com', 'execute-api'),
+])
+def test_auto_signing_uses_endpoint_service(hostname, service):
+    request = http.Request.make('POST', 'https://' + hostname + '/', b'body')
+    sign_request(request, hostname, {**INJECTION, 'service': 'auto'}, VALUE)
+    assert '/us-east-1/' + service + '/aws4_request' in request.headers['Authorization']
+
+
+@pytest.mark.parametrize('hostname', [
+    'ecs.us-west-2.amazonaws.com', 'unknown.us-east-1.amazonaws.com',
+    'ecs.us-east-1.amazonaws.com.evil.com', 'evil.ecs.us-east-1.amazonaws.com',
+])
+def test_auto_signing_rejects_unknown_or_wrong_region_without_mutation(hostname):
+    request = http.Request.make('POST', 'https://' + hostname + '/', b'body')
+    original = request.headers.copy()
+    with pytest.raises(UnsupportedAWSRequest):
+        sign_request(request, hostname, {**INJECTION, 'service': 'auto'}, VALUE)
+    assert request.headers == original

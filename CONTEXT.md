@@ -45,7 +45,7 @@ The service-wide signing identity used to mint certificates for Allow-with-crede
 _Avoid_: VM CA, mitmproxy CA
 
 **Rule**:
-A policy identified by an immutable unique name that associates a VM selector and exact hostname match with an Allow, Block, or Allow-with-credential action. Every Rule has a globally unique priority; lower numbers are evaluated first.
+A policy identified by an immutable unique name that associates a VM selector and a hostname match with an Allow, Block, or Allow-with-credential action. A hostname match is exact or uses a leading `*.` to include subdomains at any depth, excluding the parent domain itself. Every Rule has a globally unique priority; lower numbers are evaluated first, including when exact and wildcard matches overlap.
 _Avoid_: Allowlist entry, proxy policy
 
 **Allow-with-credential rule**:

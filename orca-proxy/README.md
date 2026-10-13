@@ -75,7 +75,7 @@ AWS injection. The value stays in memory, cached for the configured TTL or
 until 30 seconds before expiration, whichever is sooner. TTL zero disables
 caching. Bearer and Basic commands still require a single-line value.
 
-Create an Allow-with-credential rule for the VM and exact AWS endpoint. Choose
+Create an Allow-with-credential rule for the VM and AWS endpoint. Choose
 **AWS SigV4** in the rule editor and specify its signing service and region.
 For example, an STS rule action is:
 
@@ -103,8 +103,24 @@ aws sts get-caller-identity --endpoint-url https://sts.us-east-1.amazonaws.com
 ```
 
 The proxy replaces guest authentication, recomputes the payload hash, and
-signs the outgoing request using the rule's service and region. Add rules for
-each endpoint needed, including S3 bucket endpoints and redirect destinations.
+signs the outgoing request using the rule's service and region.
+
+To cover regional endpoints with one rule, set its hostname to
+`*.us-east-1.amazonaws.com`, signing service to `auto`, and region to
+`us-east-1`. Reuse the same host Credential. Automatic signing uses Botocore's
+bundled endpoint metadata to select the signing service for the actual TLS
+hostname, so STS and ECS requests receive their respective signatures. It also
+supports regional S3 bucket and API Gateway resource hostnames. Unknown
+endpoints and endpoints outside the configured signing region are rejected
+before the Credential command runs; use explicit endpoint/service rules for
+unsupported endpoint forms, including global or custom endpoints.
+
+Leading `*.` matches subdomains at any depth, excluding the parent domain
+itself. Other wildcard forms are rejected. Exact and wildcard rules use the
+same priority order (lower numbers first); exact matches do not automatically
+override wildcard matches. Add rules for other endpoints needed, including
+redirect destinations outside the wildcard suffix.
+
 IAM controls allowed operations and resources: many AWS APIs share the same
 hostname and `/` path. Avoid IAM permissions that allow the VM to mint or
 retrieve further credentials if those must also stay outside the VM.
