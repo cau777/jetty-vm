@@ -51,6 +51,11 @@ def _selects_vm(vm_selector: dict, vm_name: str) -> bool:
 
 
 def _matches_hostname(pattern: str, hostname: str) -> bool:
+    if pattern == "@aws":
+        return any(hostname.endswith("." + suffix) for suffix in (
+            "amazonaws.com", "amazonaws.com.cn", "api.aws", "api.amazonwebservices.com.cn",
+            "amazonaws.eu", "c2s.ic.gov", "sc2s.sgov.gov", "cloud.adc-e.uk", "csp.hci.ic.gov",
+        ))
     if pattern.startswith("*."):
         # The dot boundary excludes the apex and lookalike suffixes.
         return hostname.endswith(pattern[1:]) and len(hostname) > len(pattern[1:])

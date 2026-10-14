@@ -43,6 +43,8 @@ async def put_rule(request: web.Request) -> web.Response:
     hostname = validation.validate_hostname(body.get("hostname"))
     vm_selector = validation.validate_vm_selector(body.get("vm_selector"), vms_repo.all_names(conn))
     action = validation.validate_rule_action(body.get("action"), credentials_repo.all_names(conn))
+    if hostname == "@aws" and action["type"] == "allow_with_credential" and action["injection"]["type"] != "aws_sigv4":
+        raise ValidationFailed("The AWS endpoint selector requires AWS SigV4 injection", fields={"action": "use AWS SigV4"})
 
     if rules_repo.priority_in_use_by_other(conn, priority, exclude_name=name):
         raise Conflict(

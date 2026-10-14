@@ -277,3 +277,18 @@ async def test_only_leading_label_wildcard_is_accepted(client):
             'action': {'type': 'allow'},
         })
         assert response.status == 422, hostname
+
+
+async def test_aws_selector_rule_round_trips_and_requires_aws_injection(client):
+    await _make_credential(client)
+    body = {
+        'priority': 10, 'vm_selector': {'type': 'all'}, 'hostname': '@aws',
+        'action': {'type': 'allow_with_credential', 'credential': 'github-host-login',
+                   'path_prefix': '/', 'injection': {'type': 'aws_sigv4', 'service': 'auto', 'region': 'auto'}},
+    }
+    response = await client.put('/api/v1/rules/all-aws', json=body)
+    assert response.status == 201
+    assert (await response.json())['hostname'] == '@aws'
+    body['action']['injection'] = {'type': 'bearer'}
+    response = await client.put('/api/v1/rules/all-aws', json=body)
+    assert response.status == 422

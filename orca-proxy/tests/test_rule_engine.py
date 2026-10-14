@@ -212,3 +212,13 @@ def test_wildcard_and_exact_rules_follow_priority():
     rules = [_allow('exception', 1, 'ecs.us-east-1.amazonaws.com'),
              _awc('aws', 10, '*.us-east-1.amazonaws.com', 'aws', '/')]
     assert evaluate_connection(rules, 'vm', 'ecs.us-east-1.amazonaws.com').outcome == ALLOW_RULE
+
+
+def test_aws_endpoint_selector_covers_partitions_and_dualstack_only_for_selected_vm():
+    rules = [_awc('aws', 10, '@aws', 'aws', '/', vms=['secure-stack'])]
+    for host in ('iam.amazonaws.com', 'ecs.us-east-1.amazonaws.com', 'ec2.us-west-2.api.aws', 'ec2.cn-north-1.amazonaws.com.cn'):
+        assert evaluate_connection(rules, 'secure-stack', host).intercepted
+        assert evaluate_request(rules, 'secure-stack', host, '/').credential == 'aws'
+        assert not evaluate_connection(rules, 'other', host).intercepted
+    for host in ('amazonaws.com', 'api.aws', 'iam.amazonaws.com.evil.com', 'evilamazonaws.com', 'github.com'):
+        assert not evaluate_connection(rules, 'secure-stack', host).intercepted

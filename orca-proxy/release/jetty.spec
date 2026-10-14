@@ -68,7 +68,8 @@ DROP = re.compile(
     re.IGNORECASE,
 )
 a.binaries = [binary for binary in a.binaries if not DROP.search(binary[0]) and not DROP.search(binary[1])]
-a.datas = [data for data in a.datas if not DROP.search(data[0]) and not DROP.search(data[1])]
+# Qt pruning must not remove SDK service data (for example AWS "location").
+a.datas = [data for data in a.datas if not (data[0].startswith("PySide6/") and DROP.search(data[0]))]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

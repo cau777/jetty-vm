@@ -96,3 +96,28 @@ def test_auto_signing_rejects_unknown_or_wrong_region_without_mutation(hostname)
     with pytest.raises(UnsupportedAWSRequest):
         sign_request(request, hostname, {**INJECTION, 'service': 'auto'}, VALUE)
     assert request.headers == original
+
+
+@pytest.mark.parametrize('hostname,service,region', [
+    ('iam.amazonaws.com', 'iam', 'us-east-1'),
+    ('sts.amazonaws.com', 'sts', 'us-east-1'),
+    ('route53.amazonaws.com', 'route53', 'us-east-1'),
+    ('cloudfront.amazonaws.com', 'cloudfront', 'us-east-1'),
+    ('ecs.us-west-2.amazonaws.com', 'ecs', 'us-west-2'),
+    ('ec2.eu-west-1.amazonaws.com', 'ec2', 'eu-west-1'),
+    ('ec2.us-east-1.api.aws', 'ec2', 'us-east-1'),
+    ('iam.global.api.aws', 'iam', 'us-east-1'),
+    ('bucket.s3.eu-west-1.amazonaws.com', 's3', 'eu-west-1'),
+    ('s3.amazonaws.com', 's3', 'us-east-1'),
+    ('ec2.cn-north-1.amazonaws.com.cn', 'ec2', 'cn-north-1'),
+])
+def test_auto_service_and_region_sign_global_and_regional_endpoints(hostname, service, region):
+    request = http.Request.make('POST', 'https://' + hostname + '/', b'body')
+    sign_request(request, hostname, {**INJECTION, 'service': 'auto', 'region': 'auto'}, VALUE)
+    assert f'/{region}/{service}/aws4_request' in request.headers['Authorization']
+
+
+def test_global_endpoint_with_explicit_signing_region():
+    request = http.Request.make('POST', 'https://iam.amazonaws.com/', b'body')
+    sign_request(request, request.host, {**INJECTION, 'service': 'auto'}, VALUE)
+    assert '/us-east-1/iam/aws4_request' in request.headers['Authorization']

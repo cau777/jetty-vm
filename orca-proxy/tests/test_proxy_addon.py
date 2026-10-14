@@ -562,3 +562,32 @@ async def test_auto_aws_unknown_endpoint_rejected_before_credentials_execute(add
     await addon.request(flow)
     assert flow.response.status_code == 400
     assert not marker.exists()
+
+
+async def test_one_aws_rule_signs_global_regional_and_dualstack_requests(addon):
+    import json
+    import shlex
+    value = {'Version': 1, 'AccessKeyId': 'host-key', 'SecretAccessKey': 'host-secret'}
+    _put_vm(addon)
+    _put_credential(addon, name='aws', command=f'printf %s {shlex.quote(json.dumps(value))}')
+    _put_rule(addon, 'all-aws', 10, '@aws', {
+        'type': 'allow_with_credential', 'credential': 'aws', 'path_prefix': '/',
+        'injection': {'type': 'aws_sigv4', 'service': 'auto', 'region': 'auto'},
+    })
+    for hostname, service, region in [
+        ('iam.amazonaws.com', 'iam', 'us-east-1'),
+        ('sts.amazonaws.com', 'sts', 'us-east-1'),
+        ('ecs.us-west-2.amazonaws.com', 'ecs', 'us-west-2'),
+        ('ec2.us-east-1.api.aws', 'ec2', 'us-east-1'),
+    ]:
+        hello = _client_hello_data(addon, sni=hostname)
+        addon.tls_clienthello(hello)
+        assert hello.ignore_connection is False
+        flow = _flow_for(addon, hello.context.client, path='/', host=hostname, method='POST')
+        flow.request.scheme = 'https'
+        flow.request.port = 443
+        flow.request.headers['Host'] = hostname
+        flow.request.content = b'{}'
+        await addon.request(flow)
+        assert flow.response is None
+        assert f'/{region}/{service}/aws4_request' in flow.request.headers['Authorization']

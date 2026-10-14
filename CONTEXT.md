@@ -45,8 +45,12 @@ The service-wide signing identity used to mint certificates for Allow-with-crede
 _Avoid_: VM CA, mitmproxy CA
 
 **Rule**:
-A policy identified by an immutable unique name that associates a VM selector and a hostname match with an Allow, Block, or Allow-with-credential action. A hostname match is exact or uses a leading `*.` to include subdomains at any depth, excluding the parent domain itself. Every Rule has a globally unique priority; lower numbers are evaluated first, including when exact and wildcard matches overlap.
+A policy identified by an immutable unique name that associates a VM selector and a hostname match (exact, wildcard subdomains, or AWS endpoints) with an Allow, Block, or Allow-with-credential action. Every Rule has a globally unique priority; lower numbers are evaluated first, including when hostname matches overlap.
 _Avoid_: Allowlist entry, proxy policy
+
+**AWS endpoint selector**:
+A hostname match selecting AWS endpoint domains across regions and partitions, including global services. An Allow-with-credential Rule using this selector authenticates AWS API requests with its Credential; IAM permissions govern which operations are allowed.
+_Avoid_: All-host wildcard, AWS permissions
 
 **Allow-with-credential rule**:
 A terminal Rule whose hostname selects TLS interception and whose normalized, segment-boundary-aware path prefix limits which requests receive its configured credential. Requests to other paths on that intercepted hostname remain credential-free.

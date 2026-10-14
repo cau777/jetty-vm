@@ -105,15 +105,32 @@ aws sts get-caller-identity --endpoint-url https://sts.us-east-1.amazonaws.com
 The proxy replaces guest authentication, recomputes the payload hash, and
 signs the outgoing request using the rule's service and region.
 
-To cover regional endpoints with one rule, set its hostname to
+To cover AWS API endpoints across regions, including global services such as
+IAM and STS, use one Allow-with-credential rule with hostname **`@aws`**, path
+prefix `/`, and AWS SigV4 signing **service `auto` and region `auto`**. The
+rule editor's **Use all AWS endpoints** button fills these fields. Select the
+VM and reuse its existing host Credential. The AWS selector covers standard
+AWS domain suffixes across partitions, including `amazonaws.com`,
+`amazonaws.com.cn`, and dual-stack `api.aws` endpoints. It requires AWS SigV4
+for credential injection.
+
+Automatic signing resolves both the service and the signing region from
+Botocore's bundled endpoint metadata using the actual TLS hostname. Global
+IAM, STS, Route 53, and CloudFront endpoints use their metadata-defined
+signing region; regional endpoints use their respective region. Regional
+S3 bucket and API Gateway resource hostnames are also supported. Unknown
+endpoint forms are rejected before the Credential command runs. Custom
+domains and endpoint forms absent from the SDK metadata need explicit rules.
+
+To restrict the rule to one region, set its hostname to
 `*.us-east-1.amazonaws.com`, signing service to `auto`, and region to
 `us-east-1`. Reuse the same host Credential. Automatic signing uses Botocore's
 bundled endpoint metadata to select the signing service for the actual TLS
 hostname, so STS and ECS requests receive their respective signatures. It also
-supports regional S3 bucket and API Gateway resource hostnames. Unknown
-endpoints and endpoints outside the configured signing region are rejected
-before the Credential command runs; use explicit endpoint/service rules for
-unsupported endpoint forms, including global or custom endpoints.
+supports regional S3 bucket and API Gateway resource hostnames. Endpoints
+outside the configured signing region are rejected before the Credential
+command runs. `*.amazonaws.com` with service and region `auto` also covers
+regional and global endpoints under that suffix.
 
 Leading `*.` matches subdomains at any depth, excluding the parent domain
 itself. Other wildcard forms are rejected. Exact and wildcard rules use the

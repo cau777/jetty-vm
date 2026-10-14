@@ -28,6 +28,8 @@ def validate_ip_address(value: object, field: str = "ip_address") -> str:
 
 
 def validate_hostname(value: object, field: str = "hostname") -> str:
+    if value == "@aws":
+        return value
     if not isinstance(value, str) or not value:
         raise ValidationFailed(f"'{field}' is required", fields={field: "required"})
     if "://" in value or "/" in value:
