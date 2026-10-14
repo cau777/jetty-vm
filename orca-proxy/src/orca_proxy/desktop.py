@@ -383,7 +383,7 @@ class DesktopBackend(QObject):
 
     @Property(str, notify=activeViewChanged)
     def viewTitle(self) -> str:
-        return {"logs": "Connection log", "rules": "Global rules", "credentials": "Credentials", "vms": "Virtual machines"}.get(self._active_view, "Jetty")
+        return {"logs": "Connection logs", "rules": "Global rules", "credentials": "Credentials", "vms": "Virtual machines"}.get(self._active_view, "Jetty")
 
     @Property(str, notify=activeViewChanged)
     def viewSubtitle(self) -> str:

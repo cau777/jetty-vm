@@ -3,98 +3,200 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
-RowLayout {
+ColumnLayout {
     id: root
     required property var backend
     signal confirmationRequested(string kind, string name, string action)
-    spacing: 0
+    property var vm: backend.selection
+    spacing: 18
 
     Label {
-        visible: !root.backend.selection.name
+        visible: !root.vm.name
         Layout.fillWidth: true
+        Layout.fillHeight: true
         Layout.alignment: Qt.AlignCenter
         horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
         text: "Select a VM in the sidebar, or create a new one."
-        color: "#8793a5"
+        color: "#afa698"
     }
 
-    Inspector {
-        visible: !!root.backend.selection.name
-        Layout.fillHeight: true
+    RowLayout {
+        visible: !!root.vm.name
         Layout.fillWidth: true
-        Layout.preferredWidth: 480
-        backend: root.backend
-        onConfirmationRequested: (kind, name, action) => root.confirmationRequested(kind, name, action)
+        spacing: 12
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 3
+            Label { text: "VIRTUAL MACHINES"; color: "#dfba80"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.3 }
+            Label { text: root.vm.name || ""; font.pixelSize: 25; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+        }
+        Rectangle {
+            radius: 6
+            color: root.vm.status === "Running" ? "#332d20" : "#29261f"
+            border.color: "#3b362c"
+            implicitWidth: statusLabel.implicitWidth + 18
+            implicitHeight: 28
+            Label { id: statusLabel; anchors.centerIn: parent; text: root.vm.status || "Unknown"; color: "#dfba80"; font.pixelSize: 11; font.bold: true }
+        }
+        Item { Layout.fillWidth: true; Layout.minimumWidth: 4 }
+        JettyButton {
+            text: root.vm.status === "Running" ? "Stop" : "Start"
+            iconText: root.vm.status === "Running" ? "■" : "▶"
+            onClicked: root.confirmationRequested("vm", root.vm.name, root.vm.status === "Running" ? "stop" : "start")
+        }
+        JettyButton { text: "Restart"; iconText: "↻"; flat: true; onClicked: root.confirmationRequested("vm", root.vm.name, "restart") }
+        JettyButton { text: "Open files"; iconText: "↗"; highlighted: true; enabled: root.vm.status === "Running"; onClicked: root.backend.openFiles(root.vm.name) }
+        JettyButton { text: "Delete"; iconText: "⌫"; destructive: true; flat: true; onClicked: root.confirmationRequested("vm", root.vm.name, "delete") }
     }
 
     Pane {
-        visible: !!root.backend.selection.name
-        Layout.fillHeight: true
+        visible: !!root.vm.name
         Layout.fillWidth: true
-        Layout.preferredWidth: 600
-        padding: 26
-        Material.background: "#0c1017"
-        ColumnLayout {
+        padding: 0
+        background: Rectangle { color: "#201e1a"; radius: 10; border.color: "#3b362c" }
+        GridLayout {
             anchors.fill: parent
-            spacing: 14
-            RowLayout {
-                Layout.fillWidth: true
-                ColumnLayout {
+            columns: 4
+            columnSpacing: 0
+            rowSpacing: 0
+            Repeater {
+                model: [
+                    {glyph: "●", label: "STATUS", value: root.vm.status || "Unknown"},
+                    {glyph: "⌖", label: "IP ADDRESS", value: root.vm.ip_address || "—"},
+                    {glyph: "◇", label: "VM RULES", value: root.vm.rules === undefined ? "—" : String(root.vm.rules)},
+                    {glyph: "↗", label: "PORT LINKS", value: String((root.backend.portForwards || []).filter(port => port.vm_name === root.vm.name).length + (root.backend.reverseForwards || []).filter(port => port.vm_name === root.vm.name).length)}
+                ]
+                delegate: Item {
+                    required property var modelData
+                    required property int index
                     Layout.fillWidth: true
-                    Label { text: "VM RULES"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2 }
-                    Label { text: "Rules for this VM"; font.pixelSize: 22; font.bold: true }
-                }
-                JettyButton { text: "+  New rule"; highlighted: true; onClicked: root.backend.openEditor("rules", "") }
-            }
-            Label { Layout.fillWidth: true; text: "Evaluated first, in priority order. Names and priorities belong to this VM."; color: "#8793a5"; wrapMode: Text.Wrap }
-            Label {
-                visible: root.backend.message !== ""
-                Layout.fillWidth: true
-                text: root.backend.message
-                color: root.backend.messageTone === "danger" ? "#ff7b7b" : root.backend.messageTone === "success" ? "#72e0bd" : "#7eb7ff"
-                wrapMode: Text.Wrap
-            }
-            ScrollView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                clip: true
-                contentWidth: availableWidth
-                ColumnLayout {
-                    width: parent.width
-                    spacing: 10
-                    Repeater {
-                        model: root.backend.vmRulesModel
-                        delegate: Pane {
-                            required property var item
+                    Layout.preferredHeight: 76
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 18
+                        anchors.rightMargin: 18
+                        spacing: 10
+                        Label { text: modelData.glyph; color: "#dfba80"; font.pixelSize: 17; Layout.alignment: Qt.AlignTop; Layout.topMargin: 16 }
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            padding: 16
-                            Material.background: "#141a24"
-                            ColumnLayout {
-                                width: parent.width
-                                spacing: 7
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Label { Layout.fillWidth: true; text: item.name; font.bold: true; elide: Text.ElideRight }
-                                    Label { text: "Priority " + item.priority; color: "#8793a5"; font.pixelSize: 11 }
-                                }
-                                Label { Layout.fillWidth: true; text: item.hostname; color: "#7eb7ff"; wrapMode: Text.WrapAnywhere; font.family: "monospace" }
-                                Label { Layout.fillWidth: true; text: (item.action.type || "").replace(/_/g, " ") + (item.action.credential ? " · " + item.action.credential : "") + (item.action.path_prefix ? " · " + item.action.path_prefix : ""); color: "#aab5c4"; wrapMode: Text.Wrap }
-                                RowLayout {
-                                    Item { Layout.fillWidth: true }
-                                    JettyButton { text: "Edit"; flat: true; onClicked: root.backend.openEditor("rules", item.name) }
-                                    JettyButton { text: "Delete"; destructive: true; onClicked: root.confirmationRequested("rules", item.name, "delete") }
-                                }
-                            }
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 4
+                            Label { text: modelData.label; color: "#afa698"; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1 }
+                            Label { text: modelData.value; color: "#f1ece3"; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; font.family: modelData.label === "IP ADDRESS" ? "monospace" : "sans-serif" }
                         }
                     }
-                    Label { visible: root.backend.vmRulesModel.count === 0; Layout.fillWidth: true; text: "No VM rules yet. Global rules still apply."; color: "#8793a5"; wrapMode: Text.Wrap }
+                    Rectangle { visible: index < 3; anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom; width: 1; color: "#3b362c" }
                 }
             }
-            Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544" }
-            RowLayout {
+        }
+    }
+
+    Label {
+        visible: root.backend.message !== "" && !!root.vm.name
+        Layout.fillWidth: true
+        text: root.backend.message
+        color: root.backend.messageTone === "danger" ? "#ff7b7b" : root.backend.messageTone === "success" ? "#dfba80" : "#96bce8"
+        wrapMode: Text.Wrap
+    }
+
+    RowLayout {
+        visible: !!root.vm.name
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        spacing: 18
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumWidth: 430
+            Layout.preferredWidth: 600
+
+            Inspector {
                 Layout.fillWidth: true
-                Label { Layout.fillWidth: true; text: "Global rules apply after this VM’s rules."; color: "#8793a5"; wrapMode: Text.Wrap; font.pixelSize: 11 }
-                JettyButton { text: "Global rules"; flat: true; onClicked: root.backend.setView("rules") }
+                Layout.fillHeight: true
+                backend: root.backend
+                onConfirmationRequested: (kind, name, action) => root.confirmationRequested(kind, name, action)
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumWidth: 320
+            Layout.preferredWidth: 420
+            spacing: 12
+
+            Pane {
+                Layout.fillWidth: true
+                padding: 16
+                background: Rectangle { color: "#201e1a"; radius: 10; border.color: "#3b362c" }
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 10
+                    Label { text: "AGENT SETUP"; color: "#dfba80"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2 }
+                    AgentHandoff { Layout.fillWidth: true; backend: root.backend; vmName: root.vm.name || "" }
+                }
+            }
+
+            Pane {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 180
+                padding: 18
+                background: Rectangle { color: "#201e1a"; radius: 10; border.color: "#3b362c" }
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 10
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { Layout.fillWidth: true; text: "VM rules"; font.pixelSize: 18; font.bold: true }
+                        JettyButton { text: "New rule"; iconText: "＋"; highlighted: true; onClicked: root.backend.openEditor("rules", "") }
+                    }
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: availableWidth
+                        ColumnLayout {
+                            width: parent.width
+                            spacing: 8
+                            Repeater {
+                                model: root.backend.vmRulesModel
+                                delegate: Pane {
+                                    required property var item
+                                    Layout.fillWidth: true
+                                    padding: 13
+                                    background: Rectangle { color: "#29261f"; radius: 8; border.color: "#3b362c" }
+                                    ColumnLayout {
+                                        width: parent.width
+                                        spacing: 6
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Label { Layout.fillWidth: true; text: item.name; font.bold: true; elide: Text.ElideRight }
+                                            Label { text: "Priority " + item.priority; color: "#afa698"; font.pixelSize: 10 }
+                                        }
+                                        Label { Layout.fillWidth: true; text: item.hostname; color: "#96bce8"; wrapMode: Text.WrapAnywhere; font.family: "monospace"; font.pixelSize: 11 }
+                                        Label { Layout.fillWidth: true; text: (item.action.type || "").replace(/_/g, " ") + (item.action.credential ? " · " + item.action.credential : "") + (item.action.path_prefix ? " · " + item.action.path_prefix : ""); color: "#c3bcae"; wrapMode: Text.Wrap; font.pixelSize: 11 }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Item { Layout.fillWidth: true }
+                                            JettyButton { text: "Edit"; iconText: "✎"; flat: true; onClicked: root.backend.openEditor("rules", item.name) }
+                                            JettyButton { text: "Delete"; iconText: "⌫"; destructive: true; flat: true; onClicked: root.confirmationRequested("rules", item.name, "delete") }
+                                        }
+                                    }
+                                }
+                            }
+                            Label { visible: root.backend.vmRulesModel.count === 0; Layout.fillWidth: true; Layout.margins: 12; text: "No VM rules yet. Global rules still apply."; color: "#afa698"; wrapMode: Text.Wrap }
+                        }
+                    }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: "#3b362c" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { Layout.fillWidth: true; text: "Global rules apply after these."; color: "#afa698"; wrapMode: Text.Wrap; font.pixelSize: 11 }
+                        JettyButton { text: "Global rules"; iconText: "◇"; flat: true; onClicked: root.backend.setView("rules") }
+                    }
+                }
             }
         }
     }

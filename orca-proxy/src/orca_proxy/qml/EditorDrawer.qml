@@ -12,8 +12,8 @@ Drawer {
     height: parent.height
     modal: true
     closePolicy: Popup.CloseOnEscape
-    Material.background: "#111720"
-    background: Rectangle { color: "#111720"; border.color: "#2b3544"; border.width: 1 }
+    Material.background: "#201e1a"
+    background: Rectangle { color: "#201e1a"; border.color: "#3b362c"; border.width: 1 }
     Overlay.modal: Rectangle { color: "#b3000000" }
 
     Connections {
@@ -35,7 +35,7 @@ Drawer {
             spacing: 12
             anchors.margins: 24
 
-            Label { Layout.leftMargin: 24; text: root.backend.editor.kind === "vm" ? "NEW VM" : root.backend.editor.kind === "rules" ? "RULE" : "CREDENTIAL"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.3 }
+            Label { Layout.leftMargin: 24; text: root.backend.editor.kind === "vm" ? "NEW VM" : root.backend.editor.kind === "rules" ? "RULE" : "CREDENTIAL"; color: "#dfba80"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.3 }
             Label { Layout.leftMargin: 24; text: root.backend.editor.mode === "edit" ? "Edit " + (root.backend.editor.name || "") : root.backend.editor.kind === "vm" ? "Create an agent VM" : "Create " + (root.backend.editor.kind === "rules" ? "a rule" : "a credential"); font.pixelSize: 22; font.bold: true; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
 
             // VM creation form and live job
@@ -49,9 +49,9 @@ Drawer {
                 Label { visible: !!root.backend.errorFields.name; text: root.backend.errorFields.name || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 RowLayout {
                     SpinBox { id: vmCpus; from: 1; to: 128; value: 4; editable: true }
-                    Label { text: "CPUs"; color: "#8793a5" }
+                    Label { text: "CPUs"; color: "#afa698" }
                     Item { Layout.fillWidth: true }
-                    Label { text: "Ubuntu"; color: "#8793a5" }
+                    Label { text: "Ubuntu"; color: "#afa698" }
                     TextField { id: vmImage; text: "ubuntu:24.04"; Layout.preferredWidth: 145 }
                 }
                 Label { visible: !!root.backend.errorFields.image; text: root.backend.errorFields.image || ""; color: "#ff7b7b"; font.pixelSize: 11 }
@@ -61,7 +61,7 @@ Drawer {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: "Optional SSH public key"; color: "#8793a5"; font.pixelSize: 11 }
+                    Label { text: "Optional SSH public key"; color: "#afa698"; font.pixelSize: 11 }
                     Item { Layout.fillWidth: true }
                 }
                 TextField { id: vmSshKey; Layout.fillWidth: true; placeholderText: "Use the host's default key if empty"; font.family: "monospace" }
@@ -70,9 +70,10 @@ Drawer {
                 RowLayout {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
-                    JettyButton { text: "Cancel"; flat: true; onClicked: root.backend.closeEditor() }
+                    JettyButton { text: "Cancel"; iconText: "×"; flat: true; onClicked: root.backend.closeEditor() }
                     JettyButton {
                         text: "Create VM"
+                        iconText: "＋"
                         highlighted: true
                         enabled: root.backend.job.state !== "submitting" && root.backend.job.state !== "running" && root.backend.job.state !== "queued"
                         onClicked: root.backend.startCreate({name: vmName.text, cpus: vmCpus.value, memory: vmMemory.text, disk: vmDisk.text, image: vmImage.text, ssh_public_key: vmSshKey.text})
@@ -87,9 +88,9 @@ Drawer {
                 JobStepper { Layout.fillWidth: true; job: root.backend.job; failureNote: "The VM may exist even though setup did not finish. Check the VM list before trying again." }
                 RowLayout {
                     visible: root.backend.job.state === "failed"
-                    JettyButton { text: "Close"; flat: true; onClicked: root.backend.closeEditor() }
+                    JettyButton { text: "Close"; iconText: "×"; flat: true; onClicked: root.backend.closeEditor() }
                     Item { Layout.fillWidth: true }
-                    JettyButton { text: "Try again"; highlighted: true; onClicked: root.backend.dismissJob() }
+                    JettyButton { text: "Try again"; iconText: "↻"; highlighted: true; onClicked: root.backend.dismissJob() }
                 }
             }
             ColumnLayout {
@@ -100,20 +101,20 @@ Drawer {
                 spacing: 13
                 Pane {
                     Layout.fillWidth: true
-                    Material.background: "#16332b"
-                    Label { width: parent.width; text: "VM created successfully at " + ((root.backend.job.result || {}).ip_address || "unknown address") + "."; color: "#72e0bd"; wrapMode: Text.Wrap }
+                    Material.background: "#332d20"
+                    Label { width: parent.width; text: "VM created successfully at " + ((root.backend.job.result || {}).ip_address || "unknown address") + "."; color: "#dfba80"; wrapMode: Text.Wrap }
                 }
                 Label {
                     Layout.fillWidth: true
                     text: "It is not set up yet. Use your agent to prepare it: the agent inspects your project, installs its toolchain and coding-agent harnesses, and adds the access rules it needs."
-                    color: "#edf2f7"
+                    color: "#f1ece3"
                     wrapMode: Text.Wrap
                 }
                 AgentHandoff { Layout.fillWidth: true; backend: root.backend; vmName: (root.backend.job.result || {}).name || "" }
                 RowLayout {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
-                    JettyButton { text: "Done"; highlighted: true; onClicked: { root.backend.dismissJob(); root.backend.closeEditor() } }
+                    JettyButton { text: "Done"; iconText: "✓"; highlighted: true; onClicked: { root.backend.dismissJob(); root.backend.closeEditor() } }
                 }
             }
 
@@ -140,21 +141,21 @@ Drawer {
                 }
                 TextField { id: credentialName; Layout.fillWidth: true; text: root.backend.editor.name || ""; placeholderText: "Credential name"; enabled: root.backend.editor.mode === "create" }
                 Label { visible: !!root.backend.errorFields.name; text: root.backend.errorFields.name || ""; color: "#ff7b7b"; font.pixelSize: 11 }
-                Label { text: "Provider command"; color: "#8793a5"; font.pixelSize: 11 }
+                Label { text: "Provider command"; color: "#afa698"; font.pixelSize: 11 }
                 TextArea { id: credentialCommand; Layout.fillWidth: true; text: root.backend.editor.command || ""; placeholderText: "Command that prints a credential to stdout"; wrapMode: TextEdit.Wrap; selectByMouse: true; implicitHeight: 180 }
                 Label { visible: !!root.backend.errorFields.command; text: root.backend.errorFields.command || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 RowLayout {
-                    Label { text: "Cache TTL in seconds"; color: "#8793a5" }
+                    Label { text: "Cache TTL in seconds"; color: "#afa698" }
                     SpinBox { id: credentialTtl; from: 0; to: 10000000; value: root.backend.editor.ttl_seconds === undefined ? 300 : root.backend.editor.ttl_seconds; editable: true }
-                    Label { text: "0 disables caching"; color: "#8793a5"; font.pixelSize: 11 }
+                    Label { text: "0 disables caching"; color: "#afa698"; font.pixelSize: 11 }
                 }
                 Label { visible: !!root.backend.errorFields.ttl_seconds; text: root.backend.errorFields.ttl_seconds || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 Label { visible: root.backend.errorMessage !== ""; text: root.backend.errorMessage; color: "#ff7b7b"; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 RowLayout {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
-                    JettyButton { text: "Cancel"; flat: true; onClicked: root.backend.closeEditor() }
-                    JettyButton { text: "Save credential"; highlighted: true; onClicked: root.backend.saveCredential({name: credentialName.text, command: credentialCommand.text, ttl_seconds: credentialTtl.value}) }
+                    JettyButton { text: "Cancel"; iconText: "×"; flat: true; onClicked: root.backend.closeEditor() }
+                    JettyButton { text: "Save credential"; iconText: "✓"; highlighted: true; onClicked: root.backend.saveCredential({name: credentialName.text, command: credentialCommand.text, ttl_seconds: credentialTtl.value}) }
                 }
             }
 
@@ -169,15 +170,15 @@ Drawer {
                 TextField { id: ruleName; Layout.fillWidth: true; text: root.backend.editor.name || ""; placeholderText: "Rule name"; enabled: root.backend.editor.mode === "create" }
                 Label { visible: !!root.backend.errorFields.name; text: root.backend.errorFields.name || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 RowLayout {
-                    Label { text: "Priority"; color: "#8793a5" }
+                    Label { text: "Priority"; color: "#afa698" }
                     SpinBox { id: rulePriority; from: 0; to: 10000000; value: root.backend.editor.priority === undefined ? 100 : root.backend.editor.priority; editable: true }
                     Item { Layout.fillWidth: true }
                 }
                 Label { visible: !!root.backend.errorFields.priority; text: root.backend.errorFields.priority || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 TextField { id: ruleHost; Layout.fillWidth: true; text: root.backend.editor.hostname || ""; placeholderText: "Hostname, *.domain, or @aws for all AWS endpoints" }
                 Label { visible: !!root.backend.errorFields.hostname; text: root.backend.errorFields.hostname || ""; color: "#ff7b7b"; font.pixelSize: 11 }
-                Label { Layout.fillWidth: true; text: root.backend.editor.scope ? "Applies to " + root.backend.editor.scope + ". Evaluated before global rules." : "Applies to all VMs. Evaluated after each VM’s rules."; color: "#8793a5"; wrapMode: Text.Wrap }
-                Label { text: "Action"; color: "#8793a5"; font.pixelSize: 11 }
+                Label { Layout.fillWidth: true; text: root.backend.editor.scope ? "Applies to " + root.backend.editor.scope + ". Evaluated before global rules." : "Applies to all VMs. Evaluated after each VM’s rules."; color: "#afa698"; wrapMode: Text.Wrap }
+                Label { text: "Action"; color: "#afa698"; font.pixelSize: 11 }
                 ComboBox {
                     id: actionType
                     Layout.fillWidth: true
@@ -209,7 +210,7 @@ Drawer {
                     }
                     TextField { id: injectionUsername; Layout.fillWidth: true; visible: injectionType.currentIndex === 1; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.username || "" : ""; placeholderText: "Basic auth username" }
                     TextField { id: awsService; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.service || "" : ""; placeholderText: "AWS signing service: auto, s3, sts, etc." }
-                    Label { visible: injectionType.currentIndex === 2; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: "Use auto for both service and region to sign known regional and global AWS API endpoints."; color: "#9ca3af"; font.pixelSize: 11 }
+                    Label { visible: injectionType.currentIndex === 2; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: "Use auto for both service and region to sign known regional and global AWS API endpoints."; color: "#afa698"; font.pixelSize: 11 }
                     TextField { id: awsRegion; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.region || "" : ""; placeholderText: "AWS signing region: auto or us-east-1" }
                     Button { visible: injectionType.currentIndex === 2; text: "Use all AWS endpoints"; onClicked: { ruleHost.text = "@aws"; awsService.text = "auto"; awsRegion.text = "auto" } }
                 }
@@ -218,9 +219,10 @@ Drawer {
                 RowLayout {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
-                    JettyButton { text: "Cancel"; flat: true; onClicked: root.backend.closeEditor() }
+                    JettyButton { text: "Cancel"; iconText: "×"; flat: true; onClicked: root.backend.closeEditor() }
                     JettyButton {
                         text: "Save rule"
+                        iconText: "✓"
                         highlighted: true
                         onClicked: {
                             const selector = root.backend.editor.vm_selector

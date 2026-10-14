@@ -21,9 +21,9 @@ ColumnLayout {
             Layout.fillWidth: true
             text: root.job.state === "queued" ? "Waiting to start…" : root.job.state === "submitting" ? "Starting operation…" : root.job.state === "done" ? "Complete" : root.job.state === "failed" ? "Operation failed" : "Working…"
             font.bold: true
-            color: root.job.state === "failed" ? "#ff7b7b" : root.job.state === "done" ? "#72e0bd" : "#edf2f7"
+            color: root.job.state === "failed" ? "#ff7b7b" : root.job.state === "done" ? "#dfba80" : "#f1ece3"
         }
-        Label { text: Math.floor(root.job.elapsed_seconds || 0) + " s"; color: "#8793a5"; font.family: "monospace"; font.pixelSize: 11 }
+        Label { text: Math.floor(root.job.elapsed_seconds || 0) + " s"; color: "#afa698"; font.family: "monospace"; font.pixelSize: 11 }
     }
 
     Repeater {
@@ -45,14 +45,14 @@ ColumnLayout {
                     anchors.centerIn: parent
                     visible: modelData.state !== "running"
                     text: modelData.state === "done" ? "✓" : modelData.state === "failed" ? "✕" : "○"
-                    color: modelData.state === "done" ? "#72e0bd" : modelData.state === "failed" ? "#ff7b7b" : "#556070"
+                    color: modelData.state === "done" ? "#dfba80" : modelData.state === "failed" ? "#ff7b7b" : "#766f62"
                     font.bold: true
                 }
             }
             Label {
                 Layout.fillWidth: true
                 text: modelData.label
-                color: modelData.state === "pending" ? "#667386" : modelData.state === "failed" ? "#ff7b7b" : "#edf2f7"
+                color: modelData.state === "pending" ? "#766f62" : modelData.state === "failed" ? "#ff7b7b" : "#f1ece3"
                 font.bold: modelData.state === "running"
                 wrapMode: Text.Wrap
             }

@@ -12,7 +12,7 @@ ColumnLayout {
     Label {
         Layout.fillWidth: true
         text: "The agent opens in a temporary folder and asks what you want to do with this VM."
-        color: "#8793a5"
+        color: "#afa698"
         wrapMode: Text.Wrap
         font.pixelSize: 11
     }
@@ -25,6 +25,7 @@ ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true
                 text: modelData.label
+                iconText: "↗"
                 enabled: !root.backend.handoffMessage.startsWith("Opening ")
                 onClicked: root.backend.handoff(root.vmName, modelData.key, "")
             }
@@ -34,7 +35,7 @@ ColumnLayout {
         visible: root.backend.handoffMessage !== ""
         Layout.fillWidth: true
         text: root.backend.handoffMessage
-        color: "#72e0bd"
+        color: "#dfba80"
         wrapMode: Text.Wrap
         font.pixelSize: 11
     }
