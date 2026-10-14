@@ -222,3 +222,21 @@ def test_aws_endpoint_selector_covers_partitions_and_dualstack_only_for_selected
         assert not evaluate_connection(rules, 'other', host).intercepted
     for host in ('amazonaws.com', 'api.aws', 'iam.amazonaws.com.evil.com', 'evilamazonaws.com', 'github.com'):
         assert not evaluate_connection(rules, 'secure-stack', host).intercepted
+
+
+def test_vm_rules_always_precede_global_rules_with_duplicate_names_and_priorities():
+    rules = [_block('shared', 0, 'api.github.com'), _allow('shared', 900, 'api.github.com', vms=['alpha'])]
+    assert evaluate_connection(rules, 'alpha', 'api.github.com').outcome == ALLOW_RULE
+    assert evaluate_connection(rules, 'beta', 'api.github.com').outcome == BLOCK_RULE
+    decision = evaluate_request(rules, 'alpha', 'api.github.com', '/')
+    assert decision.outcome == ALLOW_RULE
+    assert decision.matched_rule_scope == 'alpha'
+    assert decision.trace[0].scope == 'alpha'
+
+
+def test_vm_path_miss_falls_through_to_global_rule():
+    rules = [_block('fallback', 0, 'api.github.com'), _awc('local', 100, 'api.github.com', 'token', '/private', vms=['alpha'])]
+    assert evaluate_connection(rules, 'alpha', 'api.github.com').intercepted
+    decision = evaluate_request(rules, 'alpha', 'api.github.com', '/public')
+    assert decision.outcome == BLOCK_RULE
+    assert [t.scope for t in decision.trace] == ['alpha', '']

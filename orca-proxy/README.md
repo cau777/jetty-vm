@@ -12,6 +12,17 @@ uplink address exists. `jetty tray` polls the daemon and renders the management
 UI with QML. The tray and daemon are separate processes so a desktop failure
 does not stop VM web egress. All UI HTTP requests run in worker threads.
 
+The sidebar contains Logs, Global rules, Credentials, New VM, and the VM
+list, with running VMs first. Selecting a VM opens its properties, forwards,
+agent controls, and its rule editor. Global rules appear only in Global rules.
+
+Rules belong to exactly one VM or the global scope. Names and priorities are
+unique within that scope, so VMs may reuse them. Matching VM rules run before
+global rules; each scope uses ascending priority and terminal rule semantics.
+Existing multi-VM rules migrate into independent copies for each selected VM.
+Use `/api/v1/vms/<vm>/rules/<name>` for VM rules and
+`/api/v1/rules/<name>?scope=global` for global rules.
+
 VM creation and gateway setup run as daemon jobs. The API returns a job ID and
 reports real provisioning stages from `GET /api/v1/jetty/jobs/{job_id}`. The
 CLI follows the same job until completion, so its commands remain blocking.
@@ -134,7 +145,8 @@ regional and global endpoints under that suffix.
 
 Leading `*.` matches subdomains at any depth, excluding the parent domain
 itself. Other wildcard forms are rejected. Exact and wildcard rules use the
-same priority order (lower numbers first); exact matches do not automatically
+same scope and priority order (VM rules first, then globals; lower numbers
+first within each scope); exact matches do not automatically
 override wildcard matches. Add rules for other endpoints needed, including
 redirect destinations outside the wildcard suffix.
 

@@ -63,18 +63,17 @@ def _matches_hostname(pattern: str, hostname: str) -> bool:
 
 
 def _candidates(rules: list[dict], vm_name: str, hostname: str) -> list[dict]:
-    """Rules whose VM selector and hostname match, in ascending priority order.
-
-    Priority is the sole tiebreaker (#5 step 3) — duplicate priorities are
-    rejected at write time (repo/rules.py + handlers/rules.py), so this is
-    unambiguous.
-    """
+    """VM rules precede global rules; priorities order each scope independently."""
     matched = [
         rule
         for rule in rules
         if _matches_hostname(rule["hostname"], hostname) and _selects_vm(rule["vm_selector"], vm_name)
     ]
-    return sorted(matched, key=lambda r: r["priority"])
+    return sorted(matched, key=lambda r: (r["vm_selector"]["type"] == "all", r["priority"]))
+
+
+def _scope(rule: dict, vm_name: str) -> str:
+    return "" if rule["vm_selector"]["type"] == "all" else vm_name
 
 
 @dataclass
@@ -82,6 +81,8 @@ class ConnectionDecision:
     intercepted: bool
     outcome: str | None = None  # set only when not intercepted
     matched_rule: str | None = None  # rule name behind `outcome`
+    matched_rule_scope: str | None = None
+    intercepted_rule_scope: str | None = None
     intercepted_by_rule: str | None = None  # rule name that forced interception
 
 
@@ -93,12 +94,12 @@ def evaluate_connection(rules: list[dict], vm_name: str, hostname: str) -> Conne
 
     first = candidates[0]
     if first["action"]["type"] == "allow":
-        return ConnectionDecision(intercepted=False, outcome=ALLOW_RULE, matched_rule=first["name"])
+        return ConnectionDecision(intercepted=False, outcome=ALLOW_RULE, matched_rule=first["name"], matched_rule_scope=_scope(first, vm_name))
     if first["action"]["type"] == "block":
-        return ConnectionDecision(intercepted=False, outcome=BLOCK_RULE, matched_rule=first["name"])
+        return ConnectionDecision(intercepted=False, outcome=BLOCK_RULE, matched_rule=first["name"], matched_rule_scope=_scope(first, vm_name))
     # allow_with_credential: interception is forced by this rule's mere
     # presence — the per-path outcome is resolved later, per HTTP request.
-    return ConnectionDecision(intercepted=True, intercepted_by_rule=first["name"])
+    return ConnectionDecision(intercepted=True, intercepted_by_rule=first["name"], intercepted_rule_scope=_scope(first, vm_name))
 
 
 @dataclass
@@ -107,12 +108,14 @@ class TraceEntry:
     priority: int
     action_type: str
     result: str  # matched_terminal | path_no_match_continue | skipped_unsafe_path
+    scope: str = ""
 
 
 @dataclass
 class RequestDecision:
     outcome: str
     matched_rule: str | None = None
+    matched_rule_scope: str | None = None
     credential: str | None = None
     injection: dict | None = None
     trace: list[TraceEntry] = field(default_factory=list)
@@ -127,18 +130,18 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
         action = rule["action"]
 
         if action["type"] == "allow":
-            trace.append(TraceEntry(rule["name"], rule["priority"], "allow", "matched_terminal"))
-            return RequestDecision(outcome=ALLOW_RULE, matched_rule=rule["name"], trace=trace)
+            trace.append(TraceEntry(rule["name"], rule["priority"], "allow", "matched_terminal", _scope(rule, vm_name)))
+            return RequestDecision(outcome=ALLOW_RULE, matched_rule=rule["name"], matched_rule_scope=_scope(rule, vm_name), trace=trace)
 
         if action["type"] == "block":
-            trace.append(TraceEntry(rule["name"], rule["priority"], "block", "matched_terminal"))
-            return RequestDecision(outcome=BLOCK_RULE, matched_rule=rule["name"], trace=trace)
+            trace.append(TraceEntry(rule["name"], rule["priority"], "block", "matched_terminal", _scope(rule, vm_name)))
+            return RequestDecision(outcome=BLOCK_RULE, matched_rule=rule["name"], matched_rule_scope=_scope(rule, vm_name), trace=trace)
 
         # allow_with_credential
         if not is_safe_absolute_path(path):
             trace.append(
                 TraceEntry(
-                    rule["name"], rule["priority"], "allow_with_credential", "skipped_unsafe_path"
+                    rule["name"], rule["priority"], "allow_with_credential", "skipped_unsafe_path", _scope(rule, vm_name)
                 )
             )
             continue
@@ -155,12 +158,13 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
         if matches:
             trace.append(
                 TraceEntry(
-                    rule["name"], rule["priority"], "allow_with_credential", "matched_terminal"
+                    rule["name"], rule["priority"], "allow_with_credential", "matched_terminal", _scope(rule, vm_name)
                 )
             )
             return RequestDecision(
                 outcome=ALLOW_CREDENTIAL,
                 matched_rule=rule["name"],
+                matched_rule_scope=_scope(rule, vm_name),
                 credential=action["credential"],
                 injection=action["injection"],
                 trace=trace,
@@ -168,7 +172,7 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
 
         trace.append(
             TraceEntry(
-                rule["name"], rule["priority"], "allow_with_credential", "path_no_match_continue"
+                rule["name"], rule["priority"], "allow_with_credential", "path_no_match_continue", _scope(rule, vm_name)
             )
         )
 

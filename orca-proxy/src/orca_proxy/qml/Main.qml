@@ -20,9 +20,8 @@ ApplicationWindow {
 
     property var views: [
         {key: "logs", label: "Logs", glyph: "↗"},
-        {key: "rules", label: "Rules", glyph: "◇"},
-        {key: "credentials", label: "Credentials", glyph: "▣"},
-        {key: "vms", label: "VMs", glyph: "▦"}
+        {key: "rules", label: "Global rules", glyph: "◇"},
+        {key: "credentials", label: "Credentials", glyph: "▣"}
     ]
 
     function rowKey(row) { return backend.activeView === "logs" ? String(row.id) : String(row.name || "") }
@@ -32,7 +31,7 @@ ApplicationWindow {
     }
     function rowSecondary(row) {
         if (backend.activeView === "logs") return row.vm_name + " · " + row.destination_port + " · " + String(row.started_at || "").replace("T", " ").slice(0, 19)
-        if (backend.activeView === "rules") return row.hostname + " · " + (row.vm_selector && row.vm_selector.type === "all" ? "all VMs" : (row.vm_selector && row.vm_selector.vms || []).join(", "))
+        if (backend.activeView === "rules") return row.hostname
         return row.ip_address || "No IP address"
     }
     function rowStatus(row) {
@@ -79,7 +78,7 @@ ApplicationWindow {
             // Left navigation
             Rectangle {
                 Layout.fillHeight: true
-                Layout.preferredWidth: 205
+                Layout.preferredWidth: 235
                 color: "#10151d"
                 ColumnLayout {
                     anchors.fill: parent
@@ -97,7 +96,32 @@ ApplicationWindow {
                             background: Rectangle { radius: 7; color: highlighted ? "#1b2935" : "transparent" }
                         }
                     }
-                    Item { Layout.fillHeight: true }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544"; Layout.topMargin: 12; Layout.bottomMargin: 10 }
+                    JettyButton { Layout.fillWidth: true; text: "+  New VM"; highlighted: true; enabled: backend.ready && !backend.needsSetup; onClicked: backend.openEditor("vms", "") }
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.topMargin: 8
+                        clip: true
+                        model: backend.vmsModel
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        delegate: ItemDelegate {
+                            id: vmNav
+                            required property var item
+                            width: ListView.view.width
+                            height: 42
+                            highlighted: backend.activeView === "vms" && backend.selectionKey === item.name
+                            onClicked: backend.selectItem("vms", item.name)
+                            background: Rectangle { radius: 7; color: vmNav.highlighted ? "#1b2935" : vmNav.hovered ? "#171f2a" : "transparent" }
+                            contentItem: RowLayout {
+                                spacing: 10
+                                Rectangle { width: 7; height: 7; radius: 4; color: vmNav.item.status === "Running" ? "#72e0bd" : vmNav.item.status === "Stopped" ? "#8793a5" : "#ffc56e" }
+                                Label { Layout.fillWidth: true; text: vmNav.item.name; elide: Text.ElideRight; color: vmNav.highlighted ? "#edf2f7" : "#aab5c4"; font.pixelSize: 12 }
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.text: item.name + " · " + (item.status || "Unknown")
+                        }
+                    }
                     Label { text: backend.ready ? "● daemon ready" : "● daemon unavailable"; color: backend.ready ? "#72e0bd" : "#ffc56e"; font.pixelSize: 11; Layout.leftMargin: 9 }
                     Label { text: "LXD " + (backend.lxdAvailable ? "available" : "unavailable"); color: "#8793a5"; font.pixelSize: 10; Layout.leftMargin: 9; Layout.bottomMargin: 5 }
                 }
@@ -117,8 +141,9 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 spacing: 0
 
-                // Main table
+                // Logs, global rules and credentials retain their table and inspector.
                 ColumnLayout {
+                    visible: backend.activeView !== "vms"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.margins: 26
@@ -163,7 +188,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.margins: 14
                                 Label { text: backend.activeView === "logs" ? "DESTINATION" : "NAME"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 220 }
-                                Label { visible: backend.activeView !== "credentials"; text: backend.activeView === "logs" ? "VM · PORT · TIME" : backend.activeView === "rules" ? "HOST · VM SELECTOR" : "IP ADDRESS"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 260 }
+                                Label { visible: backend.activeView !== "credentials"; text: backend.activeView === "logs" ? "VM · PORT · TIME" : backend.activeView === "rules" ? "HOST" : "IP ADDRESS"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 260 }
                                 Label { text: backend.activeView === "rules" ? "ACTION" : backend.activeView === "credentials" ? "LIVE STATUS" : backend.activeView === "vms" ? "STATUS" : "DECISION"; color: "#8793a5"; font.pixelSize: 10; font.bold: true; Layout.preferredWidth: 112 }
                             }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3544" }
@@ -200,8 +225,17 @@ ApplicationWindow {
                     }
                 }
 
+                VmPage {
+                    visible: backend.activeView === "vms"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    backend: root.controller
+                    onConfirmationRequested: (kind, name, action) => root.showConfirmation(kind, name, action)
+                }
+
                 // Right inspector
                 Inspector {
+                    visible: backend.activeView !== "vms"
                     Layout.fillHeight: true
                     Layout.preferredWidth: 410
                     backend: root.controller
@@ -225,7 +259,7 @@ ApplicationWindow {
         Label {
             width: 360
             wrapMode: Text.Wrap
-            text: confirmation.action === "delete" ? "This removes the VM and its LXD instance. This action cannot be undone." : "Jetty will " + confirmation.action + " this VM."
+            text: confirmation.action === "delete" ? (confirmation.kind === "vm" ? "This removes the VM and its LXD instance. This action cannot be undone." : "Delete this " + (confirmation.kind === "rules" ? "rule" : "credential") + "?") : "Jetty will " + confirmation.action + " this VM."
             color: "#aab5c4"
         }
         onAccepted: {

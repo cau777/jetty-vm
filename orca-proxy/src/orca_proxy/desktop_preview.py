@@ -43,9 +43,12 @@ def main(argv: list[str] | None = None) -> int:
         QTimer.singleShot(delay_ms, callback)
 
     plan = [
-        (400, lambda: capture("01-vms")),
+        (400, lambda: capture("00-initial-logs")),
         (100, lambda: backend.selectItem("vms", "agent-harness")),
         (350, lambda: capture("01-vm-inspector")),
+        (100, lambda: backend.openEditor("rules", "claude")),
+        (350, lambda: capture("01-vm-rule-editor")),
+        (100, backend.closeEditor),
         (250, lambda: (backend.setView("rules"), backend.selectItem("rules", "github"))),
         (350, lambda: capture("02-rules")),
         (250, lambda: (backend.setView("credentials"), backend.selectItem("credentials", "claude-code-subscription"))),

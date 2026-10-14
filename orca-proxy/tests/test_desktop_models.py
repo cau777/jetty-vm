@@ -43,3 +43,46 @@ def test_open_files_previews_the_vm_sftp_location_in_demo_mode():
     backend.openFiles("agent-harness")
 
     assert backend.message == "Preview only: would open sftp://agent-harness/home/ubuntu."
+
+
+def test_vm_sidebar_sorts_running_first_and_includes_registered_vms():
+    backend = DesktopBackend(demo=True)
+    backend._registered_vms = [{'name': 'missing', 'ip_address': '10.0.0.1'}]
+    backend._replace_raw_vms([{'name': 'alpha', 'status': 'Stopped'}, {'name': 'zebra', 'status': 'Running'}, {'name': 'beta', 'status': 'Running'}])
+    assert [r['name'] for r in backend.vmsModel.items] == ['beta', 'zebra', 'alpha', 'missing']
+
+
+def test_vm_rule_editor_filters_and_addresses_the_selected_scope():
+    backend = DesktopBackend(demo=True)
+    backend.selectItem('vms', 'agent-harness')
+    assert [r['name'] for r in backend.rulesModel.items] == ['github']
+    assert [r['name'] for r in backend.vmRulesModel.items] == ['claude']
+    backend.openEditor('rules', '')
+    assert backend.editor['scope'] == 'agent-harness'
+    assert backend.editor['priority'] == 30
+    requests = []
+    backend._request = lambda method, path, body=None, callback=None: requests.append((method, path, body))
+    backend.saveRule({'name': 'shared', 'priority': 10, 'hostname': 'example.com', 'action': {'type': 'allow'}})
+    assert requests[-1][1] == '/api/v1/vms/agent-harness/rules/shared'
+    assert requests[-1][2]['vm_selector'] == {'type': 'only', 'vms': ['agent-harness']}
+    backend.setView('rules')
+    backend.openEditor('rules', '')
+    assert backend.editor['scope'] == ''
+    assert backend.editor['priority'] == 20
+    backend.saveRule({'name': 'shared', 'priority': 10, 'hostname': 'example.com', 'action': {'type': 'allow'}})
+    assert requests[-1][1] == '/api/v1/rules/shared?scope=global'
+
+
+def test_deleting_a_vm_rule_keeps_the_vm_selected():
+    backend = DesktopBackend(demo=True)
+    backend.selectItem('vms', 'agent-harness')
+    requests = []
+    def request(method, path, body=None, callback=None):
+        requests.append(path)
+        if callback:
+            callback(True, {})
+    backend._request = request
+    backend.deleteItem('rules', 'claude')
+    assert requests == ['/api/v1/vms/agent-harness/rules/claude']
+    assert backend.selectionKey == 'agent-harness'
+    assert backend.selection['name'] == 'agent-harness'

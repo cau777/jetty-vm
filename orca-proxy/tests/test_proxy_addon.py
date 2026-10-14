@@ -591,3 +591,29 @@ async def test_one_aws_rule_signs_global_regional_and_dualstack_requests(addon):
         await addon.request(flow)
         assert flow.response is None
         assert f'/{region}/{service}/aws4_request' in flow.request.headers['Authorization']
+
+
+async def test_duplicate_rule_names_log_the_selected_vm_scope(addon):
+    from mitmproxy import http
+
+    _put_vm(addon)
+    _put_credential(addon)
+    _put_rule(addon, 'shared', 10, 'api.github.com', {'type': 'block'})
+    _put_rule(addon, 'shared', 10, 'api.github.com', {
+        'type': 'allow_with_credential', 'credential': 'gh', 'path_prefix': '/',
+        'injection': {'type': 'bearer'},
+    }, vm_selector={'type': 'only', 'vms': ['skills-dev']})
+    hello = _client_hello_data(addon, sni='api.github.com')
+    addon.tls_clienthello(hello)
+    row = dict(addon._requests_conn.execute('SELECT * FROM connections').fetchone())
+    import json
+    assert json.loads(row['intercepted_by_rule_json'])['scope'] == 'skills-dev'
+    flow = _flow_for(addon, hello.context.client)
+    await addon.request(flow)
+    assert flow.request.headers['Authorization'] == 'Bearer token'
+    flow.response = http.Response.make(200, b'ok')
+    addon.response(flow)
+    row = dict(addon._requests_conn.execute('SELECT * FROM http_requests').fetchone())
+    snapshot = json.loads(row['matched_rule_json'])
+    assert snapshot['scope'] == 'skills-dev'
+    assert snapshot['action_type'] == 'allow_with_credential'

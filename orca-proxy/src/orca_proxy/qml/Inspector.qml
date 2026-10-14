@@ -112,7 +112,7 @@ Pane {
             width: parent.width
             spacing: 12
 
-            Label { text: "SELECTION INSPECTOR"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.1 }
+            Label { text: root.backend.activeView === "vms" ? "VM PROPERTIES" : "SELECTION INSPECTOR"; color: "#72e0bd"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.1 }
             Label {
                 Layout.fillWidth: true
                 visible: !root.backend.selection.name && root.backend.activeView !== "logs"

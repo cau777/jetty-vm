@@ -136,13 +136,14 @@ class DesktopBackend(QObject):
         self._demo = demo
         self._demo_extra_vms: list[dict[str, Any]] = []
         self._demo_step_index = 0
-        self._active_view = "vms"
+        self._active_view = "logs"
         self._models = {
             "logs": JsonListModel(self),
             "rules": JsonListModel(self),
             "credentials": JsonListModel(self),
             "vms": JsonListModel(self),
         }
+        self._vm_rules_model = JsonListModel(self)
         self._registered_vms: list[dict] = []
         self._raw_vms: list[dict] = []
         self._rules: list[dict] = []
@@ -188,6 +189,10 @@ class DesktopBackend(QObject):
         callback: Callable[[bool, Any], None] | None = None,
     ) -> str:
         request_id = uuid.uuid4().hex
+        if self._demo:
+            if callback is not None:
+                callback(False, {"message": "Preview only: changes are not saved."})
+            return request_id
         worker = _HttpRequest(request_id, self._base_url, method, path, body)
         worker.signals.completed.connect(self._request_finished)
         self._workers[request_id] = worker
@@ -233,7 +238,7 @@ class DesktopBackend(QObject):
 
         def update_rules(body):
             self._rules = body.get("rules", [])
-            self.rulesModel.replace(sorted(self._rules, key=lambda row: row.get("priority", 0)))
+            self._rebuild_rule_models()
             self._rebuild_vms()
 
         self._load("/api/v1/status", update_status)
@@ -267,7 +272,9 @@ class DesktopBackend(QObject):
     def _rebuild_vms(self) -> None:
         registered = {row["name"]: row for row in self._registered_vms}
         rows = []
-        for vm in self._raw_vms:
+        raw = {vm["name"]: vm for vm in self._raw_vms}
+        for name in registered.keys() | raw.keys():
+            vm = raw.get(name, {"name": name, "status": "Unavailable"})
             rules = sum(
                 1
                 for rule in self._rules
@@ -275,8 +282,20 @@ class DesktopBackend(QObject):
                 or vm.get("name") in rule.get("vm_selector", {}).get("vms", [])
             )
             rows.append({**registered.get(vm.get("name"), {}), **vm, "rules": rules})
-        self.vmsModel.replace(sorted(rows, key=lambda row: row.get("name", "")))
+        self.vmsModel.replace(sorted(rows, key=lambda row: (str(row.get("status", "")).lower() != "running", row.get("name", "").lower())))
         self._refresh_selection()
+
+    def _rebuild_rule_models(self) -> None:
+        self.rulesModel.replace(sorted(
+            [r for r in self._rules if r.get("vm_selector", {}).get("type") == "all"],
+            key=lambda r: r.get("priority", 0),
+        ))
+        vm = self._selected_key if self._active_view == "vms" else ""
+        self._vm_rules_model.replace(sorted(
+            [r for r in self._rules if r.get("vm_selector", {}).get("type") == "only"
+             and r.get("vm_selector", {}).get("vms") == [vm]],
+            key=lambda r: r.get("priority", 0),
+        ))
 
     def _set_ready(self, ready: bool) -> None:
         self._ready = ready
@@ -296,7 +315,7 @@ class DesktopBackend(QObject):
             {"name": "github", "priority": 10, "hostname": "api.github.com", "vm_selector": {"type": "all"}, "action": {"type": "allow"}},
             {"name": "claude", "priority": 20, "hostname": "api.anthropic.com", "vm_selector": {"type": "only", "vms": ["agent-harness"]}, "action": {"type": "allow_with_credential", "credential": "claude-code-subscription", "path_prefix": "/", "injection": {"type": "bearer"}}},
         ]
-        self.rulesModel.replace(self._rules)
+        self._rebuild_rule_models()
         self.credentialsModel.replace([{"name": "claude-code-subscription", "command": "claude-token", "ttl_seconds": 1800, "status": "valid", "expires_at": None}])
         self._set_ports([
             {"vm_name": "agent-harness", "vm_port": 5173, "host_port": 5173, "persistent": False, "state": "active", "error": None, "url": "http://localhost:5173"},
@@ -317,6 +336,10 @@ class DesktopBackend(QObject):
     @Property(QObject, constant=True)
     def rulesModel(self):
         return self._models["rules"]
+
+    @Property(QObject, constant=True)
+    def vmRulesModel(self):
+        return self._vm_rules_model
 
     @Property(QObject, constant=True)
     def credentialsModel(self):
@@ -360,13 +383,13 @@ class DesktopBackend(QObject):
 
     @Property(str, notify=activeViewChanged)
     def viewTitle(self) -> str:
-        return {"logs": "Connection log", "rules": "Rules", "credentials": "Credentials", "vms": "Virtual machines"}.get(self._active_view, "Jetty")
+        return {"logs": "Connection log", "rules": "Global rules", "credentials": "Credentials", "vms": "Virtual machines"}.get(self._active_view, "Jetty")
 
     @Property(str, notify=activeViewChanged)
     def viewSubtitle(self) -> str:
         return {
             "logs": "Inspect outbound requests and the rules that handled them.",
-            "rules": "Control which destinations each VM can reach.",
+            "rules": "Rules for all VMs, evaluated after each VM’s own rules.",
             "credentials": "Manage host-side credential providers without exposing their values.",
             "vms": "Create and manage isolated LXD agent machines.",
         }.get(self._active_view, "")
@@ -455,6 +478,8 @@ class DesktopBackend(QObject):
         self._selected_key = ""
         self._selection = {}
         self._log_details = {}
+        self.closeEditor()
+        self._rebuild_rule_models()
         self.activeViewChanged.emit()
         self.selectionChanged.emit()
         self.refresh()
@@ -467,6 +492,8 @@ class DesktopBackend(QObject):
         self._selected_key = key
         row = next((item for item in self._models[view].items if self._key_for(view, item) == key), {})
         self._selection = dict(row)
+        self.closeEditor()
+        self._rebuild_rule_models()
         self._log_details = {}
         self.activeViewChanged.emit()
         self.selectionChanged.emit()
@@ -504,6 +531,7 @@ class DesktopBackend(QObject):
             self._selected_key = ""
         else:
             self._selection = dict(row)
+        self._rebuild_rule_models()
         self.selectionChanged.emit()
 
     @Slot(str, str)
@@ -512,14 +540,18 @@ class DesktopBackend(QObject):
             kind = "vm"
         self._error_fields = {}
         self._error_message = ""
-        model = self._models.get(kind)
+        model = self.vmRulesModel if kind == "rules" and self._active_view == "vms" else self._models.get(kind)
         row = next((item for item in model.items if item.get("name") == name), {}) if name and model else {}
         self._editor = {"kind": kind, "mode": "edit" if name else "create", **row}
         if kind == "vm":
             self._editor.update({"cpus": 4, "memory": "8GiB", "disk": "40GiB", "image": "ubuntu:24.04"})
-        elif kind == "rules" and not name:
-            priorities = [int(rule.get("priority", 0)) for rule in self._rules]
-            self._editor["priority"] = max(priorities, default=0) + 10
+        elif kind == "rules":
+            scope = self._selected_key if self._active_view == "vms" else ""
+            self._editor["scope"] = scope
+            self._editor["vm_selector"] = {"type": "only", "vms": [scope]} if scope else {"type": "all"}
+            if not name:
+                priorities = [int(rule.get("priority", 0)) for rule in model.items]
+                self._editor["priority"] = max(priorities, default=0) + 10
         self.editorChanged.emit()
 
     @Slot()
@@ -533,7 +565,9 @@ class DesktopBackend(QObject):
     def saveRule(self, form: dict) -> None:
         name = str(form.get("name", "")).strip()
         body = {key: form.get(key) for key in ("priority", "vm_selector", "hostname", "action")}
-        self._save_resource("rules", name, body)
+        scope = self._editor.get("scope", "")
+        body["vm_selector"] = {"type": "only", "vms": [scope]} if scope else {"type": "all"}
+        self._save_resource("rules", name, body, scope=scope)
 
     @Slot("QVariantMap")
     def saveCredential(self, form: dict) -> None:
@@ -544,11 +578,10 @@ class DesktopBackend(QObject):
             ttl = -1
         self._save_resource("credentials", name, {"command": form.get("command", ""), "ttl_seconds": ttl})
 
-    def _save_resource(self, kind: str, name: str, body: dict) -> None:
+    def _save_resource(self, kind: str, name: str, body: dict, scope: str = "") -> None:
         self._error_fields = {}
         self._error_message = ""
         self.editorChanged.emit()
-        encoded = urllib.parse.quote(name, safe="")
 
         def complete(ok, result):
             if not ok:
@@ -558,7 +591,7 @@ class DesktopBackend(QObject):
             self.closeEditor()
             self.refresh()
 
-        self._request("PUT", f"/api/v1/{kind}/{encoded}", body, complete)
+        self._request("PUT", self._resource_path(kind, name, scope), body, complete)
 
     def _set_form_error(self, error: Any) -> None:
         error = error if isinstance(error, dict) else {"message": str(error)}
@@ -567,21 +600,33 @@ class DesktopBackend(QObject):
         self.editorChanged.emit()
         self._notify(self._error_message, "danger")
 
+    @staticmethod
+    def _resource_path(kind: str, name: str, scope: str = "") -> str:
+        encoded = urllib.parse.quote(name, safe="")
+        if kind == "rules":
+            if scope:
+                vm = urllib.parse.quote(scope, safe="")
+                return f"/api/v1/vms/{vm}/rules/{encoded}"
+            return f"/api/v1/rules/{encoded}?scope=global"
+        return f"/api/v1/{kind}/{encoded}"
+
     @Slot(str, str)
     def deleteItem(self, kind: str, name: str) -> None:
-        encoded = urllib.parse.quote(name, safe="")
+        scope = self._selected_key if kind == "rules" and self._active_view == "vms" else ""
+        path = self._resource_path(kind, name, scope)
 
         def complete(ok, error):
             if not ok:
                 self._notify(str(error.get("message", "Delete failed.")), "danger")
                 return
             self._notify(f"{kind[:-1].title()} deleted.", "success")
-            self._selection = {}
-            self._selected_key = ""
-            self.selectionChanged.emit()
+            if kind != "rules" or not scope:
+                self._selection = {}
+                self._selected_key = ""
+                self.selectionChanged.emit()
             self.refresh()
 
-        self._request("DELETE", f"/api/v1/{kind}/{encoded}", callback=complete)
+        self._request("DELETE", path, callback=complete)
 
     @Slot(str)
     def refreshCredential(self, name: str) -> None:

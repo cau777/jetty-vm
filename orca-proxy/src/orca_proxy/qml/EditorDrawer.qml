@@ -25,15 +25,6 @@ Drawer {
     }
     onClosed: if (root.backend.editor.kind) root.backend.closeEditor()
 
-    function selectedVms() {
-        const result = []
-        for (let i = 0; i < vmRepeater.count; i++) {
-            const control = vmRepeater.itemAt(i)
-            if (control && control.checked) result.push(control.vmName)
-        }
-        return result
-    }
-
     ScrollView {
         anchors.fill: parent
         clip: true
@@ -185,29 +176,7 @@ Drawer {
                 Label { visible: !!root.backend.errorFields.priority; text: root.backend.errorFields.priority || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 TextField { id: ruleHost; Layout.fillWidth: true; text: root.backend.editor.hostname || ""; placeholderText: "Hostname, *.domain, or @aws for all AWS endpoints" }
                 Label { visible: !!root.backend.errorFields.hostname; text: root.backend.errorFields.hostname || ""; color: "#ff7b7b"; font.pixelSize: 11 }
-                Label { text: "VM selector"; color: "#8793a5"; font.pixelSize: 11 }
-                ComboBox {
-                    id: selectorMode
-                    Layout.fillWidth: true
-                    model: ["All VMs", "Only selected VMs"]
-                    currentIndex: root.backend.editor.vm_selector && root.backend.editor.vm_selector.type === "only" ? 1 : 0
-                }
-                Flow {
-                    visible: selectorMode.currentIndex === 1
-                    Layout.fillWidth: true
-                    Repeater {
-                        id: vmRepeater
-                        model: root.backend.vmsModel
-                        delegate: CheckBox {
-                            required property var item
-                            required property int index
-                            property string vmName: item.name
-                            text: vmName
-                            checked: !!(root.backend.editor.vm_selector && (root.backend.editor.vm_selector.vms || []).includes(vmName))
-                        }
-                    }
-                }
-                Label { visible: !!root.backend.errorFields.vm_selector; text: root.backend.errorFields.vm_selector || ""; color: "#ff7b7b"; font.pixelSize: 11 }
+                Label { Layout.fillWidth: true; text: root.backend.editor.scope ? "Applies to " + root.backend.editor.scope + ". Evaluated before global rules." : "Applies to all VMs. Evaluated after each VM’s rules."; color: "#8793a5"; wrapMode: Text.Wrap }
                 Label { text: "Action"; color: "#8793a5"; font.pixelSize: 11 }
                 ComboBox {
                     id: actionType
@@ -254,7 +223,7 @@ Drawer {
                         text: "Save rule"
                         highlighted: true
                         onClicked: {
-                            const selector = selectorMode.currentIndex === 0 ? {type: "all"} : {type: "only", vms: root.selectedVms()}
+                            const selector = root.backend.editor.vm_selector
                             let action = {type: actionType.currentIndex === 0 ? "allow" : actionType.currentIndex === 1 ? "block" : "allow_with_credential"}
                             if (actionType.currentIndex === 2) {
                                 const credentials = root.backend.credentialsModel.items

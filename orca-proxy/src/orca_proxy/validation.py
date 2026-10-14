@@ -103,10 +103,10 @@ def validate_vm_selector(value: object, existing_vm_names: set[str]) -> dict:
                 fields={"vm_selector": "unexpected fields for type 'only'"},
             )
         vms = value.get("vms")
-        if not isinstance(vms, list) or not vms:
+        if not isinstance(vms, list) or len(vms) != 1 or not isinstance(vms[0], str):
             raise ValidationFailed(
-                "'vm_selector.vms' must be a non-empty list",
-                fields={"vm_selector": "vms must be a non-empty list"},
+                "'vm_selector.vms' must contain exactly one VM",
+                fields={"vm_selector": "select exactly one VM"},
             )
         if len(set(vms)) != len(vms):
             raise ValidationFailed(

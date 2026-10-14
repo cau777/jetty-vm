@@ -466,9 +466,11 @@ decision.
 
 ### Create Rules for this project
 
-Narrow to exactly what step 2 confirmed. Check `curl -fsS "$API/rules"` for
-priorities already in use — duplicates are rejected with `409`. Reuse existing
-matching Rules and preserve their priorities. Lower numbers run first: an
+Narrow to exactly what step 2 confirmed. Check
+`curl -fsS "$API/vms/<vm-name>/rules"` for priorities already used by this VM.
+Names and priorities are unique within a VM or the global scope; other VMs
+may reuse them. Reuse existing matching Rules and preserve their priorities.
+VM Rules run before Global Rules; lower numbers run first within each scope: an
 earlier Allow or Block can prevent interception, and an earlier credential
 Rule may select a different Credential. Inspect overlapping Rules rather
 than assuming that adding another Rule makes it effective.
@@ -479,9 +481,9 @@ and any additional policy determine whether writes succeed; a path prefix
 alone does not enforce read-only access. For GitHub:
 
 ```bash
-curl -fsS -X PUT "$API/rules/<vm-name>-github-api" \
+curl -fsS -X PUT "$API/vms/<vm-name>/rules/github-api" \
   -H 'Content-Type: application/json' -d '{
-    "priority": <next available>,
+    "priority": <next available for this VM>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
     "hostname": "api.github.com",
     "action": {"type": "allow_with_credential", "credential": "github-host-login",
@@ -503,9 +505,9 @@ curl -fsS -X PUT "$API/rules/<vm-name>-github-api" \
 # to default-Allow passthrough with no credential injected, so it reaches
 # GitHub for real and gets a real "Invalid username or token" back, not an
 # obvious proxy-side error):
-curl -fsS -X PUT "$API/rules/<vm-name>-github-git" \
+curl -fsS -X PUT "$API/vms/<vm-name>/rules/github-git" \
   -H 'Content-Type: application/json' -d '{
-    "priority": <next available>,
+    "priority": <next available for this VM>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
     "hostname": "github.com",
     "action": {"type": "allow_with_credential", "credential": "github-host-login",
@@ -517,9 +519,9 @@ For Claude Code (only if requested) — the real inference host, confirmed
 from the shipped CLI itself, not a broker:
 
 ```bash
-curl -fsS -X PUT "$API/rules/<vm-name>-claude" \
+curl -fsS -X PUT "$API/vms/<vm-name>/rules/claude" \
   -H 'Content-Type: application/json' -d '{
-    "priority": <next available>,
+    "priority": <next available for this VM>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
     "hostname": "api.anthropic.com",
     "action": {"type": "allow_with_credential", "credential": "claude-code-subscription",
@@ -532,9 +534,9 @@ For Codex (only if requested) — `chatgpt.com`, not `api.openai.com`: the
 tokens, which is a different inference host than API-key mode:
 
 ```bash
-curl -fsS -X PUT "$API/rules/<vm-name>-codex" \
+curl -fsS -X PUT "$API/vms/<vm-name>/rules/codex" \
   -H 'Content-Type: application/json' -d '{
-    "priority": <next available>,
+    "priority": <next available for this VM>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
     "hostname": "chatgpt.com",
     "action": {"type": "allow_with_credential", "credential": "codex-subscription",
@@ -878,17 +880,17 @@ some new path through the gateway mysteriously loses its replies.
 
 ```bash
 # Inspect Rules first; the proxy refuses to unregister a referenced VM:
-curl -fsS "$API/rules" | jq -r --arg vm <vm-name> '.rules[] | select(.vm_selector.vms // [] | index($vm)) | .name'
-# Delete Rules exclusive to this VM; update shared selectors to retain other VMs.
+curl -fsS "$API/vms/<vm-name>/rules" | jq -r '.rules[].name'
+# Delete the Rules owned by this VM. Global Rules are managed separately.
 # Close this VM's Port Forwards and Reverse Forwards before deletion.
-curl -fsS -X DELETE "$API/rules/<exclusive-rule-name>"
+curl -fsS -X DELETE "$API/vms/<vm-name>/rules/<rule-name>"
 "$JETTY" vm delete <vm-name>                          # deletes the VM and unregisters it
 ```
 
 `vm delete` refreshes the generated SSH fragment automatically. Remove stale
 known-host entries for the alias and IP if necessary. Inspect `vm port list` and
-`vm reverse-port list` and close its forwards before deletion. For Rules shared with other VMs,
-remove only the deleted VM from their selectors; retain the other VMs' policy.
+`vm reverse-port list` and close its forwards before deletion. Do not change
+other VMs’ Rules or Global Rules when deleting this VM.
 
 To remove the whole LXD mode (only with the user's explicit OK — it stops
 every Jetty VM):

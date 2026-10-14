@@ -46,9 +46,10 @@ are durable. The live value lives only in the in-memory `CredentialCache`
 
 ### Rule
 ```
-name              TEXT PRIMARY KEY
-priority          INTEGER UNIQUE   -- ascending; sole tiebreaker among matches
-vm_selector_json  TEXT             -- {"type":"all"} | {"type":"only","vms":[...]}
+scope             TEXT             -- empty for global, otherwise the VM name
+name              TEXT             -- PRIMARY KEY (scope, name)
+priority          INTEGER          -- UNIQUE (scope, priority), ascending within scope
+vm_selector_json  TEXT             -- {"type":"all"} | {"type":"only","vms":["<vm>"]}
 hostname          TEXT             -- hostname, leading *. suffix, or @aws selector
 action_json       TEXT             -- discriminated union, see below
 created_at / updated_at
@@ -101,9 +102,13 @@ DELETE /api/v1/credentials/{name}  -> 409 if referenced by a Rule
 POST   /api/v1/credentials/{name}/refresh  -> forget the cached value
 
 GET    /api/v1/rules
-GET    /api/v1/rules/{name}
-PUT    /api/v1/rules/{name}
-DELETE /api/v1/rules/{name}
+GET    /api/v1/rules/{name}?scope=global
+PUT    /api/v1/rules/{name}?scope=global
+DELETE /api/v1/rules/{name}?scope=global
+GET    /api/v1/vms/{vm_name}/rules
+GET    /api/v1/vms/{vm_name}/rules/{name}
+PUT    /api/v1/vms/{vm_name}/rules/{name}
+DELETE /api/v1/vms/{vm_name}/rules/{name}
 
 GET    /api/v1/requests            -- keyset-paginated, filterable
 GET    /api/v1/requests/{id}       -- nested connection + child http_requests
@@ -142,12 +147,12 @@ are reported by `deploy/jetty-lxd status`: the proxy never talks to LXD.
   — the same check is reused live at request-match time (#5 step 7), so a
   path that couldn't have been registered as a prefix also can't be matched
   against one, closing a normalization-mismatch bypass.
-- **VM selector**: `{"type":"all"}` or `{"type":"only","vms":[...]}`, non-empty,
-  duplicate-free, every name checked against the live `vms` table.
+- **VM selector**: `{"type":"all"}` or `{"type":"only","vms":["<vm>"]}`,
+  exactly one name checked against the live `vms` table for VM rules.
 - **Rule action**: exactly the fields each discriminated-union variant allows,
   `allow_with_credential.credential` checked against the live `credentials`
   table, `injection.basic.username` required non-empty.
-- **Uniqueness**: duplicate `priority` (Rules) and duplicate `ip_address`
+- **Uniqueness**: duplicate `(scope, priority)` or `(scope, name)` (Rules) and duplicate `ip_address`
   (VMs) both rejected at write time.
 
 ## Gateway transport / SNI-routing / selective-MITM architecture (#3, #4)
@@ -254,9 +259,10 @@ the proxy core and (conceptually) the logging layer.
    The `@aws` selector covers AWS domain suffixes across partitions, including
    dual-stack endpoints. AWS signing separately validates the actual TLS
    hostname against SDK endpoint metadata before fetching credentials.
-2. Candidates are ordered by ascending `priority` — the sole tiebreaker;
-   duplicate priorities are rejected at write time so this is never
-   ambiguous. There is no separate specificity rule.
+2. Candidates from the connecting VM’s scope run first, ordered by ascending
+   priority. Global candidates follow, also ordered by ascending priority.
+   Rule names and priorities are unique only within their scope. There is no
+   additional hostname specificity rule; a terminal VM rule overrides globals.
 3. **Connection-level** (`evaluate_connection`, one-time, pre-TLS): the
    first candidate decides. `allow`/`block` are terminal and require no
    interception. `allow_with_credential` forces interception — the
@@ -533,3 +539,16 @@ and failing loud rather than proceeding past an unconfirmed state:
   Allow-with-credential on a mismatch — provisioning-time trust verification
   is sufficient for v1; runtime attestation is a possible later enhancement.
 - Alerting/anomaly-detection on `sni_present`/`ech_present` signals.
+
+## Scoped rule migration and addressing
+
+Migration 0004 copies global rules into the empty scope and splits each legacy
+multi-VM selector into one independent rule per selected VM. Names, priorities,
+actions, and timestamps are preserved. Log snapshots and evaluation traces
+include the rule scope so reused names remain distinguishable.
+
+`GET /api/v1/rules` returns all scopes; `?scope=global` filters to global rules.
+VM rule URLs identify their VM explicitly, and scope cannot differ from the URL.
+Legacy PUT requests with a single-VM selector remain supported. Legacy GET and
+DELETE requests without a scope work only for an unambiguous rule name, otherwise
+returning 409 rather than selecting a scope silently.

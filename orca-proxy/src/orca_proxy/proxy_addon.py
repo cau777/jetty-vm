@@ -119,12 +119,12 @@ class OrcaProxyAddon:
                 return row["name"]
         return None
 
-    def _rule_snapshot(self, rules: list[dict], name: str | None) -> dict | None:
+    def _rule_snapshot(self, rules: list[dict], name: str | None, scope: str | None = None) -> dict | None:
         if name is None:
             return None
         for rule in rules:
-            if rule["name"] == name:
-                return {"name": rule["name"], "priority": rule["priority"], "action_type": rule["action"]["type"]}
+            if rule["name"] == name and (scope is None or rule.get("scope", "") == scope):
+                return {"name": rule["name"], "scope": rule.get("scope", ""), "priority": rule["priority"], "action_type": rule["action"]["type"]}
         return None
 
     # --- connection-level: tls_clienthello (design ticket #5 steps 1-4, #14's intercepted/outcome split) ---
@@ -168,8 +168,8 @@ class OrcaProxyAddon:
             duration_ms=None,
             intercepted=decision.intercepted,
             outcome=decision.outcome,
-            matched_rule=self._rule_snapshot(rules, decision.matched_rule),
-            intercepted_by_rule=self._rule_snapshot(rules, decision.intercepted_by_rule),
+            matched_rule=self._rule_snapshot(rules, decision.matched_rule, decision.matched_rule_scope),
+            intercepted_by_rule=self._rule_snapshot(rules, decision.intercepted_by_rule, decision.intercepted_rule_scope),
         )
 
         client.orca_connection_id = connection_id
@@ -371,11 +371,12 @@ class OrcaProxyAddon:
             status_origin=status_origin,
             latency_ms=latency_ms,
             outcome=decision.outcome,
-            matched_rule=self._rule_snapshot(rules, decision.matched_rule),
+            matched_rule=self._rule_snapshot(rules, decision.matched_rule, decision.matched_rule_scope),
             matched_credential=credential_name,
             trace=[
                 {
                     "rule_name": t.rule_name,
+                    "scope": t.scope,
                     "priority": t.priority,
                     "action_type": t.action_type,
                     "result": t.result,
