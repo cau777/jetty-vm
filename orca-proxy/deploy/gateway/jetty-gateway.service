@@ -1,7 +1,10 @@
 [Unit]
 Description=Jetty gateway: route agent VM web traffic to the host orca-proxy
-After=network-online.target
+After=network-online.target systemd-networkd.service
 Wants=network-online.target
+# networkd deletes foreign ip rules (our fwmark rule) whenever it starts, e.g.
+# on a systemd package upgrade; re-run the setup after every networkd restart.
+PartOf=systemd-networkd.service
 
 [Service]
 Type=oneshot
