@@ -13,28 +13,13 @@ Also, the cost of starting a project decreased massively, but those often "pollu
 
 Jetty reduces the cost of creating a truly isolated environment. You can create a LXD VM for each of your project with a few clicks, then, hand off to an agent to configure it.
 
+![Jetty VM page showing VM status, port connections, agent setup, and VM rules (demo data).](docs/images/jetty-vm.png)
+
 - The VM is isolated from your host and from your other VMs -&gt; You can let your agents run wild inside them
 - The VM has access to the internet, but can't connect to other VMs or your host without an explicit SSH tunnel -&gt; You control what is exposed
 - The HTTP(s) traffic is proxied -&gt; The proxy allows logging, blocking and intercepting requests
 - The proxy can inject credentials to specific endpoints -&gt; Your VM does not need your GitHub or OpenAI tokens
 - The VM has SSH configured -&gt; Use Orca, VSCode or JetBrains IDEs just like another SSH target
-
-## What Jetty does
-
-Jetty combines two pieces:
-
-- `orca-ssh-setup` is an agent skill that provisions a project VM, installs
-the requested coding-agent tools, and connects the VM to an SSH-based agent
-workflow.
-- `orca-proxy` is a host-side service. It receives a registered VM's web
-traffic through a gateway VM, applies a policy layer, and injects a
-host-held credential only for explicit VM, hostname, and path rules.
-
-The result is a clear boundary: the coding agent can administer its VM, but it
-cannot read, copy, or reuse credentials held on the host. Network policy is
-enforced by the network topology itself, rather than by environment variables
-the agent can remove or by rules in the host's firewall: agent VMs sit on a
-private LXD network whose only way out is a Jetty gateway VM.
 
 ## How it works
 
