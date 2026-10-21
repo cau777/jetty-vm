@@ -544,8 +544,16 @@ class JettyLxd:
     @staticmethod
     def _vm_summary(instance: dict[str, Any]) -> dict[str, Any]:
         devices = instance.get("expanded_devices") or instance.get("devices") or {}
+        config = instance.get("expanded_config") or instance.get("config") or {}
         address = (devices.get("eth0") or {}).get("ipv4.address")
-        return {"name": instance.get("name"), "ip_address": address, "status": instance.get("status", "unknown")}
+        return {
+            "name": instance.get("name"),
+            "ip_address": address,
+            "status": instance.get("status", "unknown"),
+            "cpus": config.get("limits.cpu"),
+            "memory": config.get("limits.memory"),
+            "disk": (devices.get("root") or {}).get("size"),
+        }
 
     async def _next_ip(self, client: LxdClient) -> str:
         used = {

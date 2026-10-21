@@ -55,38 +55,40 @@ ColumnLayout {
         Layout.fillWidth: true
         padding: 0
         background: Rectangle { color: "#201e1a"; radius: 10; border.color: "#3b362c" }
-        GridLayout {
+        RowLayout {
             anchors.fill: parent
-            columns: 4
-            columnSpacing: 0
-            rowSpacing: 0
+            spacing: 0
             Repeater {
                 model: [
-                    {glyph: "●", label: "STATUS", value: root.vm.status || "Unknown"},
                     {glyph: "⌖", label: "IP ADDRESS", value: root.vm.ip_address || "—"},
                     {glyph: "◇", label: "VM RULES", value: root.vm.rules === undefined ? "—" : String(root.vm.rules)},
-                    {glyph: "↗", label: "PORT LINKS", value: String((root.backend.portForwards || []).filter(port => port.vm_name === root.vm.name).length + (root.backend.reverseForwards || []).filter(port => port.vm_name === root.vm.name).length)}
+                    {glyph: "↗", label: "PORT LINKS", value: String((root.backend.portForwards || []).filter(port => port.vm_name === root.vm.name).length + (root.backend.reverseForwards || []).filter(port => port.vm_name === root.vm.name).length)},
+                    {glyph: "▣", label: "CPU", value: root.vm.cpus ? root.vm.cpus + (String(root.vm.cpus) === "1" ? " core" : " cores") : "—"},
+                    {glyph: "▤", label: "RAM", value: root.vm.memory || "—"},
+                    {glyph: "◫", label: "DISK", value: root.vm.disk || "—"}
                 ]
                 delegate: Item {
+                    id: cell
                     required property var modelData
                     required property int index
                     Layout.fillWidth: true
+                    Layout.preferredWidth: 1
                     Layout.preferredHeight: 76
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 18
                         anchors.rightMargin: 18
                         spacing: 10
-                        Label { text: modelData.glyph; color: "#dfba80"; font.pixelSize: 17; Layout.alignment: Qt.AlignTop; Layout.topMargin: 16 }
+                        Label { text: cell.modelData.glyph; color: "#dfba80"; font.pixelSize: 17; Layout.alignment: Qt.AlignTop; Layout.topMargin: 16 }
                         ColumnLayout {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignVCenter
                             spacing: 4
-                            Label { text: modelData.label; color: "#afa698"; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1 }
-                            Label { text: modelData.value; color: "#f1ece3"; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; font.family: modelData.label === "IP ADDRESS" ? "monospace" : "sans-serif" }
+                            Label { text: cell.modelData.label; color: "#afa698"; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1 }
+                            Label { text: cell.modelData.value; color: "#f1ece3"; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; font.family: cell.modelData.label === "IP ADDRESS" ? "monospace" : "sans-serif" }
                         }
                     }
-                    Rectangle { visible: index < 3; anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom; width: 1; color: "#3b362c" }
+                    Rectangle { visible: cell.index < 5; anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom; width: 1; color: "#3b362c" }
                 }
             }
         }

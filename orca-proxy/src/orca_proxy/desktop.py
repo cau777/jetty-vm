@@ -307,8 +307,8 @@ class DesktopBackend(QObject):
         self._ready = True
         self._raw_vms = [
             *self._demo_extra_vms,
-            {"name": "agent-harness", "ip_address": "10.202.0.11", "status": "Running"},
-            {"name": "sales-leads", "ip_address": "10.202.0.14", "status": "Stopped"},
+            {"name": "agent-harness", "ip_address": "10.202.0.11", "status": "Running", "cpus": "4", "memory": "8GiB", "disk": "40GiB"},
+            {"name": "sales-leads", "ip_address": "10.202.0.14", "status": "Stopped", "cpus": "2", "memory": "4GiB", "disk": "20GiB"},
         ]
         self._registered_vms = [{"name": "agent-harness", "created_at": "2026-10-01T18:30:00Z"}]
         self._rules = [

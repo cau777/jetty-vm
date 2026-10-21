@@ -13,7 +13,7 @@ UI with QML. The tray and daemon are separate processes so a desktop failure
 does not stop VM web egress. All UI HTTP requests run in worker threads.
 
 The sidebar contains Logs, Global rules, Credentials, New VM, and the VM
-list, with running VMs first. The VM dashboard shows status and usage counts,
+list, with running VMs first. The VM dashboard shows IP address, usage counts, and CPU, RAM and disk,
 agent controls, and VM rules. Port forwards and reverse forwards share one
 compact list; a direction toggle switches the ports used for a new connection.
 Global rules appear only in Global rules.
