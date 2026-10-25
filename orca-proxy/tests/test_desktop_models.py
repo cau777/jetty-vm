@@ -86,3 +86,13 @@ def test_deleting_a_vm_rule_keeps_the_vm_selected():
     assert requests == ['/api/v1/vms/agent-harness/rules/claude']
     assert backend.selectionKey == 'agent-harness'
     assert backend.selection['name'] == 'agent-harness'
+
+
+@pytest.mark.parametrize("form,expected", [({}, "virtual-machine"), ({"instance_type": "container"}, "container")])
+def test_desktop_sends_selected_instance_type(form, expected):
+    backend = DesktopBackend(demo=True)
+    backend._demo = False
+    calls = []
+    backend._start_job = lambda path, payload: calls.append((path, payload))
+    backend.startCreate({"name": "test-agent", **form})
+    assert calls[0][1]["instance_type"] == expected

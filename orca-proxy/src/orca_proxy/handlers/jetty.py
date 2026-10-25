@@ -14,13 +14,13 @@ from . import read_json_body, reject_unknown_fields
 log = logging.getLogger("jetty.api")
 
 VM_CREATE_STEPS = [
-    ("validate", "Validating VM settings"),
+    ("validate", "Validating instance settings"),
     ("instance", "Pulling the Ubuntu image and creating the instance"),
-    ("register", "Registering the VM and SSH access"),
-    ("start", "Starting the VM"),
-    ("guest_agent", "Waiting for the LXD guest agent"),
+    ("register", "Registering the instance and SSH access"),
+    ("start", "Starting the instance"),
+    ("guest_agent", "Waiting for guest command execution"),
     ("cloud_init", "Running cloud-init"),
-    ("ready", "Checking the VM is ready"),
+    ("ready", "Checking the instance is ready"),
 ]
 GATEWAY_SETUP_STEPS = [
     ("validate", "Checking the SSH key"),
@@ -87,7 +87,7 @@ async def list_vms(request: web.Request) -> web.Response:
 
 async def create_vm(request: web.Request) -> web.Response:
     body = await read_json_body(request)
-    reject_unknown_fields(body, {"name", "cpus", "memory", "disk", "image", "ssh_public_key"})
+    reject_unknown_fields(body, {"name", "cpus", "memory", "disk", "image", "instance_type", "ssh_public_key"})
     from ..validation import validate_name
 
     name = validate_name(body.get("name"))
@@ -95,7 +95,7 @@ async def create_vm(request: web.Request) -> web.Response:
         from ..errors import Conflict
 
         raise Conflict("Another Jetty provisioning job is already in progress")
-    kwargs = {key: body[key] for key in ("cpus", "memory", "disk", "image") if key in body}
+    kwargs = {key: body[key] for key in ("cpus", "memory", "disk", "image", "instance_type") if key in body}
     if "ssh_public_key" in body:
         if not isinstance(body["ssh_public_key"], str):
             from ..errors import ValidationFailed

@@ -383,7 +383,7 @@ class DesktopBackend(QObject):
 
     @Property(str, notify=activeViewChanged)
     def viewTitle(self) -> str:
-        return {"logs": "Connection logs", "rules": "Global rules", "credentials": "Credentials", "vms": "Virtual machines"}.get(self._active_view, "Jetty")
+        return {"logs": "Connection logs", "rules": "Global rules", "credentials": "Credentials", "vms": "Agent environments"}.get(self._active_view, "Jetty")
 
     @Property(str, notify=activeViewChanged)
     def viewSubtitle(self) -> str:
@@ -775,6 +775,7 @@ class DesktopBackend(QObject):
             self._start_demo_job("vm_create", form)
             return
         payload = {key: form.get(key) for key in ("name", "cpus", "memory", "disk", "image")}
+        payload["instance_type"] = form.get("instance_type", "virtual-machine")
         if form.get("ssh_public_key"):
             payload["ssh_public_key"] = form["ssh_public_key"]
         self._start_job("/api/v1/jetty/vms", payload)

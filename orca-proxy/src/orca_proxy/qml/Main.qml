@@ -109,7 +109,7 @@ ApplicationWindow {
                         }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#3b362c"; Layout.topMargin: 12; Layout.bottomMargin: 10 }
-                    JettyButton { Layout.fillWidth: true; text: "New VM"; iconText: "＋"; highlighted: true; enabled: backend.ready && !backend.needsSetup; onClicked: backend.openEditor("vms", "") }
+                    JettyButton { Layout.fillWidth: true; text: "New environment"; iconText: "＋"; highlighted: true; enabled: backend.ready && !backend.needsSetup; onClicked: backend.openEditor("vms", "") }
                     ListView {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -174,7 +174,7 @@ ApplicationWindow {
                         JettyButton { text: "Refresh"; iconText: "↻"; flat: true; onClicked: backend.refresh() }
                         JettyButton {
                             visible: backend.activeView !== "logs"
-                            text: backend.activeView === "vms" ? "New VM" : backend.activeView === "rules" ? "New rule" : "New credential"
+                            text: backend.activeView === "vms" ? "New environment" : backend.activeView === "rules" ? "New rule" : "New credential"
                             iconText: "＋"
                             highlighted: true
                             onClicked: backend.openEditor(backend.activeView, "")

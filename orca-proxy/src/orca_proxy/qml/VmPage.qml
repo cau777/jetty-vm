@@ -60,12 +60,13 @@ ColumnLayout {
             spacing: 0
             Repeater {
                 model: [
+                    {glyph: "▣", label: "TYPE", value: root.vm.instance_type === "container" ? "LXD container" : "Virtual machine"},
                     {glyph: "⌖", label: "IP ADDRESS", value: root.vm.ip_address || "—"},
                     {glyph: "◇", label: "VM RULES", value: root.vm.rules === undefined ? "—" : String(root.vm.rules)},
                     {glyph: "↗", label: "PORT LINKS", value: String((root.backend.portForwards || []).filter(port => port.vm_name === root.vm.name).length + (root.backend.reverseForwards || []).filter(port => port.vm_name === root.vm.name).length)},
                     {glyph: "▣", label: "CPU", value: root.vm.cpus ? root.vm.cpus + (String(root.vm.cpus) === "1" ? " core" : " cores") : "—"},
                     {glyph: "▤", label: "RAM", value: root.vm.memory || "—"},
-                    {glyph: "◫", label: "DISK", value: root.vm.disk || "—"}
+                    {glyph: "◫", label: "DISK", value: root.vm.disk || (root.vm.instance_type === "container" ? "No quota" : "—")}
                 ]
                 delegate: Item {
                     id: cell

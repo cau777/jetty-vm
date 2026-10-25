@@ -55,6 +55,7 @@ services you would hand it.
 jetty status
 jetty gateway setup
 jetty vm create my-agent --cpus 4 --memory 8GiB --disk 40GiB
+jetty vm create my-container --type container
 jetty vm exec my-agent -- uname -a
 jetty vm upload my-agent /home/ubuntu/setup.sh --file ./setup.sh
 jetty vm port open my-agent 5173                 # one-time, localhost:5173
@@ -66,6 +67,13 @@ jetty vm reverse-port open my-agent 11434 --vm-port 21434 --persistent
 jetty vm reverse-port list
 jetty vm reverse-port close my-agent 5432        # by VM port
 ```
+
+VMs remain the default. The creation form also offers an unprivileged LXD
+container, or use `--type container` on the CLI (`instance_type: "container"`
+in the creation API). Both types use the same gateway VM, forced HTTP(S)
+proxy, source filtering, and guest isolation. Containers share the host kernel.
+Container disk limits apply on storage drivers supporting quotas; the `dir`
+driver has no container quota, so Jetty omits the disk size there.
 
 Run `jetty --help` and `jetty vm --help` for the other lifecycle operations.
 
@@ -179,3 +187,13 @@ each run in a temporary directory). The desktop release is built with
 `tests/e2e/lxd-gateway-checks.sh` checks the full topology against real VMs
 (identity, policy, spoofing, isolation, and fail-closed behavior); see its
 header for how to run it against a test proxy.
+
+To verify VM defaults and container provisioning against a running Jetty setup:
+
+```bash
+JETTY_LIVE_TESTS=1 uv run pytest -q tests/e2e/test_lxd_instances.py
+```
+
+This creates disposable VM/container guests and a test credential/rule, checks
+HTTP(S), credential injection, spoofing protection, network isolation, restart,
+and SSH, then removes its test resources. It leaves the shared gateway running.

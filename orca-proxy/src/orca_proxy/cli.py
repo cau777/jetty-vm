@@ -101,6 +101,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--cpus", type=int, default=4)
     create.add_argument("--memory", default="8GiB")
     create.add_argument("--disk", default="40GiB")
+    create.add_argument("--type", dest="instance_type", choices=("virtual-machine", "container"), default="virtual-machine", help="instance type (default: virtual-machine)")
     create.add_argument("--image", default="ubuntu:24.04")
     create.add_argument("--ssh-key", help="path to an SSH public key")
     for action in ("delete", "start", "stop", "restart", "ip"):
@@ -182,6 +183,7 @@ def _vm(args) -> int:
             "memory": args.memory,
             "disk": args.disk,
             "image": args.image,
+            "instance_type": args.instance_type,
         }
         ssh_key = _read_ssh_key(args.ssh_key)
         if ssh_key:

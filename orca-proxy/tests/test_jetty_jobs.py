@@ -94,3 +94,19 @@ async def test_provisioning_rejects_overlapping_jobs(client, monkeypatch):
 
     service.release.set()
     assert (await _until_terminal(client, accepted["job_id"]))["state"] == "done"
+
+
+async def test_container_type_reaches_provisioning_service(client, monkeypatch):
+    received = {}
+
+    class ContainerJetty(FakeJetty):
+        async def create_vm(self, name, **kwargs):
+            received.update(kwargs)
+            return await super().create_vm(name, **kwargs)
+
+    monkeypatch.setattr(jetty_handlers, "_service", lambda _request: ContainerJetty())
+    response = await client.post("/api/v1/jetty/vms", json={"name": "agent-container", "instance_type": "container"})
+    assert response.status == 202
+    job = await _until_terminal(client, (await response.json())["job_id"])
+    assert job["state"] == "done"
+    assert received["instance_type"] == "container"

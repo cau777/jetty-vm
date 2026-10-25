@@ -35,8 +35,8 @@ Drawer {
             spacing: 12
             anchors.margins: 24
 
-            Label { Layout.leftMargin: 24; text: root.backend.editor.kind === "vm" ? "NEW VM" : root.backend.editor.kind === "rules" ? "RULE" : "CREDENTIAL"; color: "#dfba80"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.3 }
-            Label { Layout.leftMargin: 24; text: root.backend.editor.mode === "edit" ? "Edit " + (root.backend.editor.name || "") : root.backend.editor.kind === "vm" ? "Create an agent VM" : "Create " + (root.backend.editor.kind === "rules" ? "a rule" : "a credential"); font.pixelSize: 22; font.bold: true; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
+            Label { Layout.leftMargin: 24; text: root.backend.editor.kind === "vm" ? "NEW ENVIRONMENT" : root.backend.editor.kind === "rules" ? "RULE" : "CREDENTIAL"; color: "#dfba80"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.3 }
+            Label { Layout.leftMargin: 24; text: root.backend.editor.mode === "edit" ? "Edit " + (root.backend.editor.name || "") : root.backend.editor.kind === "vm" ? "Create an agent environment" : "Create " + (root.backend.editor.kind === "rules" ? "a rule" : "a credential"); font.pixelSize: 22; font.bold: true; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
 
             // VM creation form and live job
             ColumnLayout {
@@ -45,8 +45,22 @@ Drawer {
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
                 spacing: 8
-                TextField { id: vmName; Layout.fillWidth: true; placeholderText: "VM name (lowercase letters, digits and hyphens)" }
+                TextField { id: vmName; Layout.fillWidth: true; placeholderText: "Name (lowercase letters, digits and hyphens)" }
                 Label { visible: !!root.backend.errorFields.name; text: root.backend.errorFields.name || ""; color: "#ff7b7b"; font.pixelSize: 11 }
+                ComboBox {
+                    id: vmType
+                    Layout.fillWidth: true
+                    model: ["Virtual machine (default)", "LXD container"]
+                    currentIndex: root.backend.editor.instance_type === "container" ? 1 : 0
+                }
+                Label {
+                    visible: vmType.currentIndex === 1
+                    text: "Containers share the host kernel. The same network restrictions and credential proxy apply. Disk quotas require a supporting storage pool; directory storage has no quota."
+                    color: "#afa698"
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+                Label { visible: !!root.backend.errorFields.instance_type; text: root.backend.errorFields.instance_type || ""; color: "#ff7b7b"; font.pixelSize: 11 }
                 RowLayout {
                     SpinBox { id: vmCpus; from: 1; to: 128; value: 4; editable: true }
                     Label { text: "CPUs"; color: "#afa698" }
@@ -72,11 +86,11 @@ Drawer {
                     Item { Layout.fillWidth: true }
                     JettyButton { text: "Cancel"; iconText: "×"; flat: true; onClicked: root.backend.closeEditor() }
                     JettyButton {
-                        text: "Create VM"
+                        text: vmType.currentIndex === 1 ? "Create container" : "Create VM"
                         iconText: "＋"
                         highlighted: true
                         enabled: root.backend.job.state !== "submitting" && root.backend.job.state !== "running" && root.backend.job.state !== "queued"
-                        onClicked: root.backend.startCreate({name: vmName.text, cpus: vmCpus.value, memory: vmMemory.text, disk: vmDisk.text, image: vmImage.text, ssh_public_key: vmSshKey.text})
+                        onClicked: root.backend.startCreate({name: vmName.text, instance_type: vmType.currentIndex === 1 ? "container" : "virtual-machine", cpus: vmCpus.value, memory: vmMemory.text, disk: vmDisk.text, image: vmImage.text, ssh_public_key: vmSshKey.text})
                     }
                 }
             }
@@ -85,7 +99,7 @@ Drawer {
                 Layout.fillWidth: true
                 Layout.leftMargin: 24
                 Layout.rightMargin: 24
-                JobStepper { Layout.fillWidth: true; job: root.backend.job; failureNote: "The VM may exist even though setup did not finish. Check the VM list before trying again." }
+                JobStepper { Layout.fillWidth: true; job: root.backend.job; failureNote: "The instance may exist even though setup did not finish. Check the VM list before trying again." }
                 RowLayout {
                     visible: root.backend.job.state === "failed"
                     JettyButton { text: "Close"; iconText: "×"; flat: true; onClicked: root.backend.closeEditor() }
@@ -102,7 +116,7 @@ Drawer {
                 Pane {
                     Layout.fillWidth: true
                     Material.background: "#332d20"
-                    Label { width: parent.width; text: "VM created successfully at " + ((root.backend.job.result || {}).ip_address || "unknown address") + "."; color: "#dfba80"; wrapMode: Text.Wrap }
+                    Label { width: parent.width; text: "Environment created successfully at " + ((root.backend.job.result || {}).ip_address || "unknown address") + "."; color: "#dfba80"; wrapMode: Text.Wrap }
                 }
                 Label {
                     Layout.fillWidth: true

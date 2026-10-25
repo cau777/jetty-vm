@@ -58,6 +58,10 @@ same operations are available from a terminal with `jetty status`,
 `jetty gateway setup`, and `jetty vm create`. `jetty update` installs the
 latest release after verifying its published SHA-256 checksum.
 
+VMs are the default. Choose **LXD container** in the creation form or run
+`jetty vm create my-container --type container` for an unprivileged container
+using the same gateway and credential proxy. Containers share the host kernel.
+
 Then ask your preferred coding agent to set up a Jetty VM for the current
 project. For example:
 

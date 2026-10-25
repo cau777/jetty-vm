@@ -1,4 +1,4 @@
-"""Deterministic LXD setup and VM lifecycle operations for Jetty."""
+"""Deterministic LXD setup and instance lifecycle operations for Jetty."""
 
 from __future__ import annotations
 
@@ -108,13 +108,14 @@ def _cloud_config(ssh_key: str, *, packages: list[str] | None = None, ca_certifi
     return "\n".join(lines) + "\n"
 
 
-def _cloud_network_config(mac: str, address: str) -> str:
+def _cloud_network_config(mac: str, address: str, *, instance_type: str = "virtual-machine") -> str:
     return "\n".join(
         [
             "version: 2",
             "ethernets:",
             "  lan:",
-            f"    match: {{macaddress: {json.dumps(mac)}}}",
+            # Container veth devices have no permanent MAC for networkd to match.
+            "    match: {name: eth0}" if instance_type == "container" else f"    match: {{macaddress: {json.dumps(mac)}}}",
             f"    addresses: [{address}/24]",
             f"    routes: [{{to: default, via: {GATEWAY_PRIV_IP}}}]",
             "    nameservers: {addresses: [1.1.1.1, 9.9.9.9]}",
@@ -130,7 +131,7 @@ def _require_success(result: ExecResult, command: list[str], instance: str) -> N
 
 
 class JettyLxd:
-    """Owns Jetty's project, networks, gateway and registered VMs."""
+    """Owns Jetty's project, networks, gateway and registered guests."""
 
     def __init__(self, db_conn):
         self.db = db_conn
@@ -240,6 +241,7 @@ class JettyLxd:
         memory: str = "8GiB",
         disk: str = "40GiB",
         image: str = AGENT_IMAGE,
+        instance_type: str = "virtual-machine",
         ssh_key: str | None = None,
         progress: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
@@ -259,6 +261,8 @@ class JettyLxd:
                 "image must use the ubuntu:<release> form, such as ubuntu:24.04",
                 fields={"image": "invalid alias"},
             )
+        if instance_type not in ("virtual-machine", "container"):
+            raise ValidationFailed("instance_type must be virtual-machine or container", fields={"instance_type": "invalid value"})
         image_source = _image_source(image)
         ssh_key = _validate_ssh_key(ssh_key) if ssh_key else default_ssh_key()
 
@@ -268,10 +272,19 @@ class JettyLxd:
             if await self._instance(client, name) is not None:
                 raise Conflict(f"VM '{name}' already exists")
             ip = await self._next_ip(client)
-            await self._ensure_profile(client)
+            if instance_type == "container":
+                await self._ensure_container_profile(client)
+            else:
+                await self._ensure_profile(client)
             ca_row = ca.get(self.db)
             if ca_row is None:
                 raise LxdError("Jetty's interception CA is not initialized")
+            root_disk = {"type": "disk", "pool": "default", "path": "/", "size": disk}
+            if instance_type == "container":
+                pool = await client.request("GET", "/1.0/storage-pools/default", project=None)
+                # The directory driver supports VM disk sizes, but no container quotas.
+                if pool.get("driver") == "dir":
+                    root_disk.pop("size")
             mac = ":".join(["00", "16", "3e", *(f"{byte:02x}" for byte in secrets.token_bytes(3))])
             # LXD pulls the requested image as part of the instance creation operation.
             report("instance")
@@ -280,21 +293,23 @@ class JettyLxd:
                 "/1.0/instances",
                 body={
                     "name": name,
-                    "type": "virtual-machine",
+                    "type": instance_type,
                     "source": image_source,
-                    "profiles": ["default"],
+                    "profiles": ["container" if instance_type == "container" else "default"],
                     "config": {
+                        **({"security.privileged": "false"} if instance_type == "container" else {}),
                         "limits.cpu": str(cpus),
                         "limits.memory": memory,
                         "cloud-init.user-data": _cloud_config(
                             ssh_key, ca_certificate=ca_row["certificate_pem"]
                         ),
-                        "cloud-init.network-config": _cloud_network_config(mac, ip),
+                        "cloud-init.network-config": _cloud_network_config(mac, ip, instance_type=instance_type),
                     },
                     "devices": {
-                        "root": {"type": "disk", "pool": "default", "path": "/", "size": disk},
+                        "root": root_disk,
                         "eth0": {
                             "type": "nic",
+                            **({"name": "eth0"} if instance_type == "container" else {}),
                             "network": PRIV_NET,
                             "hwaddr": mac,
                             "ipv4.address": ip,
@@ -318,7 +333,7 @@ class JettyLxd:
             _require_success(cloud_init, ["cloud-init", "status", "--wait"], name)
             report("ready")
             instance = await self._instance(client, name)
-            result = {"name": name, "ip_address": ip, "status": (instance or {}).get("status", "Running")}
+            result = {"name": name, "ip_address": ip, "status": (instance or {}).get("status", "Running"), "instance_type": instance_type}
         return result
 
     async def delete_vm(self, name: str) -> None:
@@ -354,7 +369,7 @@ class JettyLxd:
             instance = await self._instance(client, name)
             if instance is None:
                 raise NotFound(f"VM '{name}' not found")
-            if action != "stop":
+            if action != "stop" and instance.get("type", "virtual-machine") == "virtual-machine":
                 await self._ensure_profile(client)
             status = instance.get("status")
             if action == "start" or (action == "restart" and status == "Stopped"):
@@ -497,6 +512,18 @@ class JettyLxd:
                 },
             )
 
+    async def _ensure_container_profile(self, client: LxdClient) -> None:
+        # Keep VM-only QEMU settings out of container configuration.
+        try:
+            await client.request("GET", "/1.0/profiles/container")
+        except LxdNotFound:
+            await client.request("POST", "/1.0/profiles", body={
+                "name": "container",
+                "description": "Jetty unprivileged agent containers",
+                "config": {},
+                "devices": {"root": {"type": "disk", "pool": "default", "path": "/"}},
+            })
+
     async def _ensure_profile(self, client: LxdClient) -> None:
         profile = await client.request("GET", "/1.0/profiles/default")
         devices = profile.get("devices") or {}
@@ -549,6 +576,7 @@ class JettyLxd:
         return {
             "name": instance.get("name"),
             "ip_address": address,
+            "instance_type": instance.get("type", "virtual-machine"),
             "status": instance.get("status", "unknown"),
             "cpus": config.get("limits.cpu"),
             "memory": config.get("limits.memory"),
