@@ -547,7 +547,7 @@ async def test_wildcard_aws_rule_intercepts_and_signs_multiple_services(addon):
         assert f'/us-east-1/{service}/aws4_request' in flow.request.headers['Authorization']
 
 
-async def test_auto_aws_unknown_endpoint_rejected_before_credentials_execute(addon, tmp_path):
+async def test_auto_aws_unknown_endpoint_passes_through_without_credentials(addon, tmp_path):
     import shlex
     marker = tmp_path / 'executed'
     flow = _aws_flow(addon, f'touch {shlex.quote(str(marker))}')
@@ -555,7 +555,28 @@ async def test_auto_aws_unknown_endpoint_rejected_before_credentials_execute(add
         '*.us-east-1.amazonaws.com',
         '{"type":"allow_with_credential","credential":"aws","path_prefix":"/","injection":{"type":"aws_sigv4","service":"auto","region":"us-east-1"}}',
     ))
-    hostname = 'unknown.us-east-1.amazonaws.com'
+    hostname = '166573186482.dkr.ecr.us-east-1.amazonaws.com'
+    flow.client_conn.orca_sni = hostname
+    flow.request.host = hostname
+    flow.request.headers['Host'] = hostname
+    flow.request.headers['Authorization'] = 'Basic guest-token'
+    await addon.request(flow)
+    assert flow.response is None
+    assert flow.request.headers['Authorization'] == 'Basic guest-token'
+    assert flow.metadata['orca_decision'].outcome == 'allow_rule'
+    assert flow.metadata['orca_credential_name'] is None
+    assert not marker.exists()
+
+
+async def test_auto_aws_wrong_region_still_rejected(addon, tmp_path):
+    import shlex
+    marker = tmp_path / 'executed'
+    flow = _aws_flow(addon, f'touch {shlex.quote(str(marker))}')
+    addon._state_conn.execute("UPDATE rules SET hostname=?, action_json=? WHERE name='aws-sts'", (
+        '*.amazonaws.com',
+        '{"type":"allow_with_credential","credential":"aws","path_prefix":"/","injection":{"type":"aws_sigv4","service":"auto","region":"us-east-1"}}',
+    ))
+    hostname = 'ecs.us-west-2.amazonaws.com'
     flow.client_conn.orca_sni = hostname
     flow.request.host = hostname
     flow.request.headers['Host'] = hostname

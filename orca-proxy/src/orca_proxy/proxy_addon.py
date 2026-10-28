@@ -20,6 +20,7 @@ concurrent connections to the same files safe.
 """
 
 import base64
+import dataclasses
 import time
 from collections.abc import Callable
 from urllib.parse import parse_qsl, urlparse
@@ -284,8 +285,13 @@ class OrcaProxyAddon:
             injection = decision.injection
             if injection["type"] == "aws_sigv4":
                 try:
-                    aws_signing.validate_request(flow.request, hostname)
                     injection = aws_signing.resolve_injection(hostname, injection)
+                    aws_signing.validate_request(flow.request, hostname)
+                except aws_signing.UnknownAWSEndpoint:
+                    # Not a SigV4 API (e.g. an ECR registry, which takes its
+                    # own Basic token): forward untouched, with no credential.
+                    flow.metadata["orca_decision"] = dataclasses.replace(decision, outcome=rule_engine.ALLOW_RULE)
+                    return
                 except aws_signing.UnsupportedAWSRequest as exc:
                     flow.response = http.Response.make(400, str(exc).encode(), {"Content-Type": "text/plain"})
                     self._log_request(flow, status=400, status_origin="proxy")

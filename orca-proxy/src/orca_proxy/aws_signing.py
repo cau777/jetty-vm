@@ -20,6 +20,10 @@ class UnsupportedAWSRequest(ValueError):
     """A request that cannot safely be re-signed by this implementation."""
 
 
+class UnknownAWSEndpoint(UnsupportedAWSRequest):
+    """An auto-scoped rule matched a host that is not a SigV4 API endpoint."""
+
+
 @lru_cache(maxsize=1)
 def _endpoint_metadata():
     """Keep endpoint metadata and signing names, without retaining SDK clients."""
@@ -96,7 +100,7 @@ def resolve_injection(hostname: str, injection: dict) -> dict:
                 scope = endpoint_scope
                 break
     if scope is None:
-        raise UnsupportedAWSRequest("Automatic AWS signing requires a known AWS endpoint")
+        raise UnknownAWSEndpoint("Automatic AWS signing requires a known AWS endpoint")
     service, signing_region = scope
     if injection["region"] not in {"auto", signing_region}:
         raise UnsupportedAWSRequest("AWS endpoint is outside the configured signing region")
