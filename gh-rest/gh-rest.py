@@ -388,6 +388,9 @@ def cmd_pr_create(args):
 
 def cmd_pr_list(args):
     owner, repo = resolve_repo(args.repo)
+    # REST's head filter requires owner:branch, whereas gh accepts a branch
+    # across forks. Filter exact refs locally and count matches for pagination.
+    keep = (lambda pr: pr.get("head", {}).get("ref") == args.head) if args.head else None
     if args.author or args.label:
         q = [f"repo:{owner}/{repo}", "type:pr", f"state:{args.state}"]
         if args.author:
@@ -396,15 +399,38 @@ def cmd_pr_list(args):
             q.append(f'label:"{lbl}"')
         if args.base:
             q.append(f"base:{args.base}")
+        if args.head:
+            q.append(f"head:{args.head}")
         result = request("GET", "search/issues", params={"q": " ".join(q), "per_page": args.limit})
         items = result.get("items", [])
+        if args.json is not None or args.head:
+            # Search returns issues, which lack base/head refs and merge state.
+            items = [request("GET", f"repos/{owner}/{repo}/pulls/{it['number']}") for it in items]
     else:
         items = paged_list(
             f"repos/{owner}/{repo}/pulls",
             params={"state": args.state, "base": args.base},
             limit=args.limit,
+            keep=keep,
         )
-        items = items[: args.limit]
+    if keep:
+        items = [it for it in items if keep(it)]
+    items = items[: args.limit]
+    if args.json is not None:
+        fields = [f.strip() for f in args.json.split(",") if f.strip()]
+        rows = []
+        for it in items:
+            obj = dict(it)
+            obj.update(
+                url=it.get("html_url"),
+                baseRefName=it.get("base", {}).get("ref"),
+                headRefName=it.get("head", {}).get("ref"),
+                state="MERGED" if it.get("merged_at") else it["state"].upper(),
+                isDraft=it.get("draft", False),
+            )
+            rows.append({field: obj.get(field) for field in fields} if fields else obj)
+        emit(rows, None)
+        return
     for it in items:
         print(f"#{it['number']}\t{it['title']}\t{it.get('head', {}).get('ref', '')}\t{it['state']}")
 
@@ -914,6 +940,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = pr.add_parser("list"); add_repo_flag(c)
     c.add_argument("--state", default="open")
     c.add_argument("--author"); c.add_argument("--label"); c.add_argument("--base")
+    c.add_argument("-H", "--head"); c.add_argument("--json")
     c.add_argument("--limit", type=int, default=30)
     c.set_defaults(func=cmd_pr_list)
 
