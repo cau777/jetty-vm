@@ -65,5 +65,15 @@ class PrListTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].args, ("GET", "repos/acme/app/pulls/42"))
 
 
+class AuthTokenTests(unittest.TestCase):
+    def test_prints_fake_token_without_network(self):
+        output = io.StringIO()
+        with patch.object(gh, "request") as request:
+            with contextlib.redirect_stdout(output):
+                gh.main(["auth", "token", "--hostname", "github.com"])
+        self.assertEqual(output.getvalue(), "gho_FAKE_TOKEN_INJECTED_BY_PROXY\n")
+        request.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

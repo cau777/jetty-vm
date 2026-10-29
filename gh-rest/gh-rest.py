@@ -918,6 +918,13 @@ def cmd_auth_status(args):
     print("A limited number of GitHub operations are authenticated")
 
 
+def cmd_auth_token(args):
+    # Tools that shell out to `gh auth token` (git credential helpers, SDKs)
+    # just need a non-empty value to put in a header; the credential-injecting
+    # proxy replaces it with the real token on the paths a Rule covers.
+    print("gho_FAKE_TOKEN_INJECTED_BY_PROXY")
+
+
 # --------------------------------------------------------------------------
 # argument parsing
 # --------------------------------------------------------------------------
@@ -1076,6 +1083,10 @@ def build_parser() -> argparse.ArgumentParser:
     auth = sub.add_parser("auth").add_subparsers(dest="auth_cmd", required=True)
     c = auth.add_parser("status")
     c.set_defaults(func=cmd_auth_status)
+    c = auth.add_parser("token")
+    c.add_argument("--hostname")
+    c.add_argument("-u", "--user")
+    c.set_defaults(func=cmd_auth_token)
 
     return p
 
