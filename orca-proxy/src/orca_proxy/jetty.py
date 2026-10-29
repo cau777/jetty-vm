@@ -28,7 +28,15 @@ PRIV_PREFIX = "10.202.0"
 GATEWAY = "jetty-gw"
 GATEWAY_UP_IP = "10.201.0.2"
 GATEWAY_PRIV_IP = "10.202.0.1"
-GATEWAY_IMAGE = "ubuntu:24.04"
+# Minimal images leave out snapd, multipathd and other services the gateway never uses.
+GATEWAY_IMAGE_SOURCE = {
+    "type": "image",
+    "mode": "pull",
+    "protocol": "simplestreams",
+    "server": "https://cloud-images.ubuntu.com/minimal/releases/",
+    "alias": "24.04",
+}
+GATEWAY_MEMORY = "512MiB"
 AGENT_IMAGE = "ubuntu:24.04"
 SSH_PORT_BASE = 2200
 TUNNEL_PORT = 51820
@@ -206,11 +214,11 @@ class JettyLxd:
                     body={
                         "name": GATEWAY,
                         "type": "virtual-machine",
-                        "source": _image_source(GATEWAY_IMAGE),
+                        "source": GATEWAY_IMAGE_SOURCE,
                         "profiles": ["default"],
                         "config": {
                             "limits.cpu": "1",
-                            "limits.memory": "1GiB",
+                            "limits.memory": GATEWAY_MEMORY,
                             "cloud-init.user-data": user_data,
                         },
                         "devices": {
