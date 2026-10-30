@@ -75,5 +75,34 @@ class AuthTokenTests(unittest.TestCase):
         request.assert_not_called()
 
 
+class HostnameTests(unittest.TestCase):
+    def run_api(self, *flags):
+        with patch.object(gh, "request", return_value={}) as request:
+            with contextlib.redirect_stdout(io.StringIO()):
+                gh.main(["api", *flags])
+        return request.call_args.args[1]
+
+    def test_api_without_hostname_keeps_relative_endpoint(self):
+        self.assertEqual(self.run_api("repos/acme/app"), "repos/acme/app")
+
+    def test_api_github_com_hostname(self):
+        self.assertEqual(self.run_api("--hostname", "github.com", "/repos/acme/app"),
+                         "https://api.github.com/repos/acme/app")
+
+    def test_api_enterprise_hostname(self):
+        self.assertEqual(self.run_api("--hostname", "ghe.acme.com", "repos/acme/app"),
+                         "https://ghe.acme.com/api/v3/repos/acme/app")
+
+    def test_api_hostname_leaves_absolute_url_alone(self):
+        url = "https://api.github.com/repos/acme/app"
+        self.assertEqual(self.run_api("--hostname", "ghe.acme.com", url), url)
+
+    def test_auth_status_accepts_hostname(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            gh.main(["auth", "status", "--hostname", "github.com"])
+        self.assertIn("authenticated", output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

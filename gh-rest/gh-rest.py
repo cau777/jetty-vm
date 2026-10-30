@@ -40,6 +40,14 @@ import urllib.request
 API_ROOT = "https://api.github.com"
 
 
+def api_root(hostname: str | None) -> str:
+    # Same mapping as the real gh CLI: github.com's API lives on its own
+    # subdomain, GitHub Enterprise Server serves it under /api/v3.
+    if not hostname or hostname == "github.com":
+        return API_ROOT
+    return f"https://{hostname}/api/v3"
+
+
 class GhError(Exception):
     pass
 
@@ -900,7 +908,10 @@ def cmd_api(args):
         headers[k.strip()] = v.strip()
 
     body = fields or None
-    result = request(method, args.endpoint, body=body, headers=headers, paginate=args.paginate, include=args.include)
+    endpoint = args.endpoint
+    if args.hostname and not endpoint.startswith(("http://", "https://")):
+        endpoint = api_root(args.hostname) + "/" + endpoint.lstrip("/")
+    result = request(method, endpoint, body=body, headers=headers, paginate=args.paginate, include=args.include)
     if args.silent:
         return
     emit(result, args.jq)
@@ -1077,11 +1088,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--paginate", action="store_true")
     c.add_argument("--silent", action="store_true")
     c.add_argument("-i", "--include", action="store_true")
+    c.add_argument("--hostname")
     c.set_defaults(func=cmd_api)
 
     # auth
     auth = sub.add_parser("auth").add_subparsers(dest="auth_cmd", required=True)
     c = auth.add_parser("status")
+    c.add_argument("--hostname")
     c.set_defaults(func=cmd_auth_status)
     c = auth.add_parser("token")
     c.add_argument("--hostname")
