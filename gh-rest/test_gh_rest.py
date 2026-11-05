@@ -65,6 +65,65 @@ class PrListTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].args, ("GET", "repos/acme/app/pulls/42"))
 
 
+class PrViewTests(unittest.TestCase):
+    def view(self, *flags):
+        output = io.StringIO()
+        with patch.object(gh, "request", return_value=dict(PR, body="First line\n\nSecond line")) as request:
+            with contextlib.redirect_stdout(output):
+                gh.main(["pr", "view", "285", "-R", "acme/app", *flags])
+        request.assert_called_once_with("GET", "repos/acme/app/pulls/285")
+        return output.getvalue()
+
+    def test_reported_command_prints_raw_body(self):
+        self.assertEqual(self.view("--json", "body", "-q", ".body"),
+                         "First line\n\nSecond line\n")
+
+    def test_long_jq_flag_filters_selected_fields(self):
+        self.assertEqual(self.view("--json", "body", "--jq", "keys | join(\",\")"), "body\n")
+
+    def test_json_without_jq_still_works(self):
+        self.assertEqual(json.loads(self.view("--json", "body")),
+                         {"body": "First line\n\nSecond line"})
+
+
+class RunListTests(unittest.TestCase):
+    RUN = {
+        "id": 123, "name": "CI", "status": "completed",
+        "conclusion": "success", "head_branch": "feat/nuxt-example",
+    }
+
+    def run_list(self, *flags, items=None):
+        output = io.StringIO()
+        with patch.object(gh, "request", return_value=[self.RUN] if items is None else items) as request:
+            with contextlib.redirect_stdout(output):
+                gh.main(["run", "list", "-R", "acme/app", *flags])
+        return output.getvalue(), request
+
+    def test_reported_command_maps_and_selects_json_fields(self):
+        output, request = self.run_list(
+            "--branch", "feat/nuxt-example", "--limit", "4",
+            "--json", "databaseId,status,conclusion,name", items=[self.RUN] * 5)
+        self.assertEqual(json.loads(output), [{
+            "databaseId": 123, "status": "completed", "conclusion": "success", "name": "CI",
+        }] * 4)
+        self.assertEqual(request.call_args.args, ("GET", "repos/acme/app/actions/runs"))
+        self.assertEqual(request.call_args.kwargs["params"]["branch"], "feat/nuxt-example")
+        self.assertEqual(request.call_args.kwargs["limit"], 4)
+
+    def test_empty_json_result(self):
+        output, _ = self.run_list("--json", "databaseId", items=[])
+        self.assertEqual(json.loads(output), [])
+
+    def test_in_progress_run_has_null_conclusion(self):
+        output, _ = self.run_list("--json", "status,conclusion", items=[
+            dict(self.RUN, status="in_progress", conclusion=None)])
+        self.assertEqual(json.loads(output), [{"status": "in_progress", "conclusion": None}])
+
+    def test_plain_output_still_works(self):
+        output, _ = self.run_list()
+        self.assertEqual(output, "123\tCI\tcompleted\tsuccess\tfeat/nuxt-example\n")
+
+
 class AuthTokenTests(unittest.TestCase):
     def test_prints_fake_token_without_network(self):
         output = io.StringIO()

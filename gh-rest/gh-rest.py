@@ -321,12 +321,11 @@ def emit(data, jq_filter: str | None):
         print(data)
 
 
-def emit_json_fields(obj: dict, fields: str | None):
+def emit_json_fields(obj: dict, fields: str | None, jq_filter: str | None = None):
     if fields:
         wanted = [f.strip() for f in fields.split(",") if f.strip()]
-        print(json.dumps({k: obj.get(k) for k in wanted}, indent=2))
-    else:
-        print(json.dumps(obj, indent=2))
+        obj = {k: obj.get(k) for k in wanted}
+    emit(obj, jq_filter)
 
 
 # --------------------------------------------------------------------------
@@ -449,13 +448,13 @@ def cmd_pr_view(args):
     if args.comments:
         comments = paged_list(f"repos/{owner}/{repo}/issues/{args.number}/comments")
         if args.json is not None:
-            print(json.dumps(comments, indent=2))
+            emit(comments, args.jq)
         else:
             for c in comments:
                 print(f"--- {c['user']['login']} ---\n{c['body']}\n")
         return
     if args.json is not None:
-        emit_json_fields(pr, args.json)
+        emit_json_fields(pr, args.json, args.jq)
         return
     print(f"#{pr['number']} {pr['title']} [{pr['state']}]")
     print(f"{pr['head']['ref']} -> {pr['base']['ref']}")
@@ -784,6 +783,14 @@ def cmd_run_list(args):
     else:
         path = f"repos/{owner}/{repo}/actions/runs"
     runs = paged_list(path, params={"branch": args.branch, "status": args.status}, limit=args.limit)[: args.limit]
+    if args.json is not None:
+        fields = [f.strip() for f in args.json.split(",") if f.strip()]
+        rows = []
+        for r in runs:
+            obj = dict(r, databaseId=r["id"])
+            rows.append({k: obj.get(k) for k in fields})
+        emit(rows, None)
+        return
     for r in runs:
         print(f"{r['id']}\t{r['name']}\t{r['status']}\t{r.get('conclusion') or ''}\t{r['head_branch']}")
 
@@ -965,6 +972,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = pr.add_parser("view"); add_repo_flag(c)
     c.add_argument("number"); c.add_argument("--web", action="store_true")
     c.add_argument("--comments", action="store_true"); c.add_argument("--json")
+    c.add_argument("-q", "--jq")
     c.set_defaults(func=cmd_pr_view)
 
     c = pr.add_parser("diff"); add_repo_flag(c); c.add_argument("number")
@@ -1059,6 +1067,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = run.add_parser("list"); add_repo_flag(c)
     c.add_argument("--workflow"); c.add_argument("--branch"); c.add_argument("--status")
+    c.add_argument("--json")
     c.add_argument("--limit", type=int, default=30)
     c.set_defaults(func=cmd_run_list)
 
