@@ -51,9 +51,9 @@ def validate_hostname(value: object, field: str = "hostname") -> str:
 
 def is_safe_absolute_path(value: str) -> bool:
     """Non-raising check shared by write-time path_prefix validation (below)
-    and live request-path eligibility (rule_engine.py) — both need the exact
-    same "is this path form unambiguous enough to trust" rule from #5 step 7:
-    reject dot-segments, percent-encoding, and empty segments.
+    and live request-path eligibility (rule_engine.py): reject dot-segments,
+    percent-encoding, and empty segments. The rule engine first decodes only
+    encoded colons in its matching copy of a request path.
     """
     if not isinstance(value, str) or not value.startswith("/"):
         return False

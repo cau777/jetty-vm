@@ -199,6 +199,31 @@ async def test_request_injects_bearer_header_on_matching_path(addon):
     assert flow.response is None  # forwarded upstream
 
 
+@pytest.mark.parametrize("version", [":0", "%3A0", "%3a0"])
+async def test_bedrock_model_version_injects_bearer_without_rewriting_url(addon, version):
+    hostname = "bedrock-runtime.us-east-1.amazonaws.com"
+    _put_vm(addon, name="jetty-secure-stack")
+    _put_credential(addon, name="bedrock", command="echo bedrock-token")
+    _put_rule(addon, "bedrock", 31, hostname, {
+        "type": "allow_with_credential", "credential": "bedrock", "path_prefix": "/",
+        "injection": {"type": "bearer"},
+    }, vm_selector={"type": "only", "vms": ["jetty-secure-stack"]})
+    data = _client_hello_data(addon, sni=hostname)
+    addon.tls_clienthello(data)
+    path = f"/model/openai.gpt-oss-120b-1{version}/converse"
+    flow = _flow_for(addon, data.context.client, host=hostname, path=path, method="POST")
+    flow.request.port = 443
+    original_url = flow.request.url
+
+    await addon.request(flow)
+
+    assert flow.request.headers.get("Authorization") == "Bearer bedrock-token"
+    assert flow.metadata["orca_decision"].outcome == "allow_credential"
+    assert flow.request.path == path
+    assert flow.request.url == original_url
+    assert flow.response is None
+
+
 async def test_request_credential_failure_returns_502(addon):
     _put_vm(addon)
     _put_credential(addon, command="exit 1")

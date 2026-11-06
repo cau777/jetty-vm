@@ -125,6 +125,11 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
     hostname = canonicalize_incoming_hostname(hostname)
     candidates = _candidates(rules, vm_name, hostname)
     trace: list[TraceEntry] = []
+    # Bedrock model IDs contain colons, often encoded by SDKs. A colon in an
+    # absolute path cannot create a segment boundary or traversal. Decode only
+    # that escape for matching; all other escapes still fail the safety check.
+    # This does not rewrite the request path forwarded upstream (or signed).
+    matching_path = path.replace("%3A", ":").replace("%3a", ":")
 
     for rule in candidates:
         action = rule["action"]
@@ -138,7 +143,7 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
             return RequestDecision(outcome=BLOCK_RULE, matched_rule=rule["name"], matched_rule_scope=_scope(rule, vm_name), trace=trace)
 
         # allow_with_credential
-        if not is_safe_absolute_path(path):
+        if not is_safe_absolute_path(matching_path):
             trace.append(
                 TraceEntry(
                     rule["name"], rule["priority"], "allow_with_credential", "skipped_unsafe_path", _scope(rule, vm_name)
@@ -146,7 +151,7 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
             )
             continue
 
-        normalized_path = normalize_path(path)
+        normalized_path = normalize_path(matching_path)
         prefix = action["path_prefix"]
         # "/" is a segment boundary by definition — every absolute path is
         # a descendant of the root — so it must match everything, not just

@@ -144,9 +144,10 @@ are reported by `deploy/jetty-lxd status`: the proxy never talks to LXD.
 - **Hostnames**: lowercase, trailing dot stripped, reject scheme/port/path; allow only a leading `*.` wildcard, or `@aws` to select AWS endpoint domains. Credential rules with `@aws` require AWS SigV4 injection.
 - **Path prefixes** (Allow-with-credential only): must start with `/`; reject
   `.`/`..` segments, percent-encoding, and empty segments (`is_safe_absolute_path`)
-  — the same check is reused live at request-match time (#5 step 7), so a
-  path that couldn't have been registered as a prefix also can't be matched
-  against one, closing a normalization-mismatch bypass.
+  — the same check is reused live at request-match time (#5 step 7), after
+  decoding only `%3A`/`%3a` to `:` in a matching copy of the request path.
+  This supports encoded Bedrock model versions without permitting encoded
+  separators, dot segments, or nested escapes. The upstream URL is unchanged.
 - **VM selector**: `{"type":"all"}` or `{"type":"only","vms":["<vm>"]}`,
   exactly one name checked against the live `vms` table for VM rules.
 - **Rule action**: exactly the fields each discriminated-union variant allows,
@@ -274,7 +275,8 @@ the proxy core and (conceptually) the logging layer.
    intercepted connection): walks the *same* candidate list in priority
    order. `allow`/`block` are still terminal on first encounter. For
    `allow_with_credential`, the request path must be a "safe absolute path"
-   (no `.`/`..`/percent-encoding/empty segments) and match the rule's
+   (no `.`/`..`/percent-encoding/empty segments, after decoding encoded colons
+   only in the matching copy) and match the rule's
    `path_prefix` (`normalized_path == prefix` or starts with `prefix + "/"`)
    to match; otherwise evaluation **continues** to the next candidate rather
    than terminating — a lower-priority rule with an unmatched path prefix

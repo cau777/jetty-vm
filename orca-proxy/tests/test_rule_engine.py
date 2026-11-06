@@ -1,3 +1,5 @@
+import pytest
+
 from orca_proxy.rule_engine import (
     ALLOW_CREDENTIAL,
     ALLOW_DEFAULT,
@@ -142,6 +144,33 @@ def test_non_matching_path_falls_through_to_default():
 def test_unsafe_path_skips_injection_and_continues():
     rules = [_awc("r1", 10, "api.github.com", "gh", "/repos/cau777")]
     decision = evaluate_request(rules, "skills-dev", "api.github.com", "/repos/../secret")
+    assert decision.outcome == ALLOW_DEFAULT
+    assert decision.trace[0].result == "skipped_unsafe_path"
+
+
+@pytest.mark.parametrize("version", [":0", "%3A0", "%3a0"])
+def test_encoded_colon_matches_literal_model_prefix_at_segment_boundary(version):
+    prefix = "/model/openai.gpt-oss-120b-1:0"
+    rules = [_awc("bedrock", 10, "bedrock-runtime.us-east-1.amazonaws.com", "bedrock", prefix)]
+    path = f"/model/openai.gpt-oss-120b-1{version}"
+    for suffix in ("", "/converse"):
+        decision = evaluate_request(rules, "skills-dev", rules[0]["hostname"], path + suffix)
+        assert decision.outcome == ALLOW_CREDENTIAL
+    decision = evaluate_request(rules, "skills-dev", rules[0]["hostname"], path + "x/converse")
+    assert decision.outcome == ALLOW_DEFAULT
+    assert decision.trace[0].result == "path_no_match_continue"
+
+
+@pytest.mark.parametrize("path", [
+    "/model/a%3A0/../secret", "/model/a%3A0//converse",
+    "/model/a%3A0%2Fconverse", "/model/a%3A0%2fconverse",
+    "/model/%2e%2e/secret", "/model/a%253A0/converse",
+    "/model/a%3A0%252Fsecret", "/model/a%3A0%00/converse",
+    "/model/a%3A0%/converse", "/model/a%3A0%5Csecret",
+])
+def test_encoded_colon_does_not_bypass_unsafe_path_checks(path):
+    rules = [_awc("bedrock", 10, "bedrock-runtime.us-east-1.amazonaws.com", "bedrock", "/")]
+    decision = evaluate_request(rules, "skills-dev", rules[0]["hostname"], path)
     assert decision.outcome == ALLOW_DEFAULT
     assert decision.trace[0].result == "skipped_unsafe_path"
 
