@@ -115,7 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     vm_upload.add_argument("name")
     vm_upload.add_argument("guest_path")
     vm_upload.add_argument("--file", help="host file to upload; stdin is used by default")
-    vm_upload.add_argument("--mode", type=lambda value: int(value, 8), default=0o644, help="guest file mode in octal")
+    vm_upload.add_argument("--mode", dest="file_mode", type=lambda value: int(value, 8), default=0o644, help="guest file mode in octal")
     vm_upload.add_argument("--owner", choices=("ubuntu", "root"), default="ubuntu")
     vm_port = vm_modes.add_parser("port", help="forward VM ports to localhost on this computer")
     port_modes = vm_port.add_subparsers(dest="port_mode", required=True)
@@ -224,7 +224,7 @@ def _vm(args) -> int:
         body = {
             "path": args.guest_path,
             "content_b64": base64.b64encode(content).decode("ascii"),
-            "mode": args.mode,
+            "mode": args.file_mode,
             "owner": args.owner,
         }
         response = _api("POST", f"/api/v1/jetty/vms/{encoded_name}/files", body)

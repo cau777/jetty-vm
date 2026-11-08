@@ -315,7 +315,7 @@ def run_jq(data, filter_expr: str) -> None:
 def emit(data, jq_filter: str | None):
     if jq_filter:
         run_jq(data, jq_filter)
-    elif isinstance(data, (dict, list)):
+    elif isinstance(data, (dict, list, bool)):
         print(json.dumps(data, indent=2))
     elif data is not None:
         print(data)

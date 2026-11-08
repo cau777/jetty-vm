@@ -163,5 +163,13 @@ class HostnameTests(unittest.TestCase):
         self.assertIn("authenticated", output.getvalue())
 
 
+class BooleanOutputTests(unittest.TestCase):
+    def test_boolean_scalars_use_json_spelling(self):
+        for value, expected in [(True, 'true\n'), (False, 'false\n')]:
+            with self.subTest(value=value), contextlib.redirect_stdout(io.StringIO()) as output:
+                gh.emit(value, None)
+                self.assertEqual(output.getvalue(), expected)
+
+
 if __name__ == "__main__":
     unittest.main()
