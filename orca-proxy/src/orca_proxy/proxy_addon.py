@@ -325,6 +325,9 @@ class OrcaProxyAddon:
             elif injection["type"] == "basic":
                 basic = base64.b64encode(f"{injection['username']}:{value}".encode()).decode()
                 flow.request.headers[header_name] = f"Basic {basic}"
+            elif injection["type"] == "header":
+                header_name = injection["name"]
+                flow.request.headers[header_name] = value
             flow.metadata["orca_injected_header"] = header_name
             flow.metadata["orca_credential_name"] = decision.credential
             flow.metadata["orca_credential_digest"] = digest(value)

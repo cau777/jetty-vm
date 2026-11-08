@@ -205,6 +205,14 @@ def _validate_injection(value: object) -> dict:
                 fields={"action": "unexpected fields for injection type 'bearer'"},
             )
         return {"type": "bearer"}
+    if injection_type == "header":
+        name = value.get("name")
+        if set(value) != {"type", "name"} or not isinstance(name, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ValidationFailed(
+                "Custom header injection requires a valid HTTP header name",
+                fields={"action": "invalid custom header name or fields"},
+            )
+        return {"type": "header", "name": name}
     if injection_type == "basic":
         if set(value.keys()) != {"type", "username"}:
             raise ValidationFailed(
@@ -219,6 +227,6 @@ def _validate_injection(value: object) -> dict:
             )
         return {"type": "basic", "username": username}
     raise ValidationFailed(
-        "'action.injection.type' must be 'bearer', 'basic', or 'aws_sigv4'",
+        "'action.injection.type' must be 'bearer', 'basic', 'header', or 'aws_sigv4'",
         fields={"action": "invalid injection type"},
     )

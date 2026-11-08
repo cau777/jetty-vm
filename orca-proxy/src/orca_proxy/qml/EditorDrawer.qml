@@ -216,12 +216,13 @@ Drawer {
                     ComboBox {
                         id: injectionType
                         Layout.fillWidth: true
-                        model: ["Bearer", "Basic", "AWS SigV4"]
+                        model: ["Bearer", "Basic", "AWS SigV4", "Custom header"]
                         currentIndex: {
                             const injection = root.backend.editor.action ? root.backend.editor.action.injection : null
-                            return injection && injection.type === "aws_sigv4" ? 2 : injection && injection.type === "basic" ? 1 : 0
+                            return injection && injection.type === "header" ? 3 : injection && injection.type === "aws_sigv4" ? 2 : injection && injection.type === "basic" ? 1 : 0
                         }
                     }
+                    TextField { id: injectionHeaderName; Layout.fillWidth: true; visible: injectionType.currentIndex === 3; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.name || "" : ""; placeholderText: "Header name, e.g. X-API-Key" }
                     TextField { id: injectionUsername; Layout.fillWidth: true; visible: injectionType.currentIndex === 1; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.username || "" : ""; placeholderText: "Basic auth username" }
                     TextField { id: awsService; Layout.fillWidth: true; visible: injectionType.currentIndex === 2; text: root.backend.editor.action && root.backend.editor.action.injection ? root.backend.editor.action.injection.service || "" : ""; placeholderText: "AWS signing service: auto, s3, sts, etc." }
                     Label { visible: injectionType.currentIndex === 2; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: "Use auto for both service and region to sign known regional and global AWS API endpoints."; color: "#afa698"; font.pixelSize: 11 }
@@ -243,7 +244,7 @@ Drawer {
                             let action = {type: actionType.currentIndex === 0 ? "allow" : actionType.currentIndex === 1 ? "block" : "allow_with_credential"}
                             if (actionType.currentIndex === 2) {
                                 const credentials = root.backend.credentialsModel.items
-                                action = {type: "allow_with_credential", credential: credentialChoice.currentIndex >= 0 ? credentials[credentialChoice.currentIndex].name : "", path_prefix: pathPrefix.text, injection: injectionType.currentIndex === 0 ? {type: "bearer"} : injectionType.currentIndex === 1 ? {type: "basic", username: injectionUsername.text} : {type: "aws_sigv4", service: awsService.text, region: awsRegion.text}}
+                                action = {type: "allow_with_credential", credential: credentialChoice.currentIndex >= 0 ? credentials[credentialChoice.currentIndex].name : "", path_prefix: pathPrefix.text, injection: injectionType.currentIndex === 0 ? {type: "bearer"} : injectionType.currentIndex === 1 ? {type: "basic", username: injectionUsername.text} : injectionType.currentIndex === 3 ? {type: "header", name: injectionHeaderName.text} : {type: "aws_sigv4", service: awsService.text, region: awsRegion.text}}
                             }
                             root.backend.saveRule({name: ruleName.text, priority: rulePriority.value, hostname: ruleHost.text, vm_selector: selector, action: action})
                         }

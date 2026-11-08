@@ -199,6 +199,26 @@ async def test_request_injects_bearer_header_on_matching_path(addon):
     assert flow.response is None  # forwarded upstream
 
 
+async def test_request_injects_custom_header_on_matching_path(addon):
+    _put_vm(addon)
+    _put_credential(addon, command="echo secret-token")
+    _put_rule(
+        addon, "inject-gh", 10, "api.github.com",
+        {"type": "allow_with_credential", "credential": "gh", "path_prefix": "/repos/cau777",
+         "injection": {"type": "header", "name": "X-API-Key"}},
+    )
+    data = _client_hello_data(addon, sni="api.github.com")
+    addon.tls_clienthello(data)
+
+    flow = _flow_for(addon, data.context.client)
+    flow.request.headers["x-api-key"] = "guest-value"
+    await addon.request(flow)
+
+    assert flow.request.headers["X-API-Key"] == "secret-token"
+    assert flow.metadata["orca_injected_header"] == "X-API-Key"
+    assert flow.response is None  # forwarded upstream
+
+
 @pytest.mark.parametrize("version", [":0", "%3A0", "%3a0"])
 async def test_bedrock_model_version_injects_bearer_without_rewriting_url(addon, version):
     hostname = "bedrock-runtime.us-east-1.amazonaws.com"
