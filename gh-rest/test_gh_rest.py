@@ -2,8 +2,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import shutil
+import tempfile
 from pathlib import Path
 import unittest
+import zipfile
 from unittest.mock import patch
 
 
@@ -163,13 +166,77 @@ class HostnameTests(unittest.TestCase):
         self.assertIn("authenticated", output.getvalue())
 
 
+def zip_bytes(files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+class RunDownloadTests(unittest.TestCase):
+    ARTIFACTS = [
+        {"name": "dist", "expired": False, "archive_download_url": "https://api.github.com/a/1/zip"},
+        {"name": "coverage", "expired": False, "archive_download_url": "https://api.github.com/a/2/zip"},
+        {"name": "old", "expired": True, "archive_download_url": "https://api.github.com/a/3/zip"},
+    ]
+    ZIPS = {
+        "https://api.github.com/a/1/zip": zip_bytes({"app.js": "js", "lib/util.js": "util"}),
+        "https://api.github.com/a/2/zip": zip_bytes({"index.html": "html"}),
+    }
+
+    def fake_request(self, method, path, out=None, **kw):
+        if out is None:
+            return self.ARTIFACTS
+        out.write(self.ZIPS[path])
+
+    def download(self, *flags):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        with patch.object(gh, "request", side_effect=self.fake_request) as request:
+            gh.main(["run", "download", "-R", "acme/app", "-D", tmp, *flags])
+        files = sorted(str(p.relative_to(tmp)) for p in Path(tmp).rglob("*") if p.is_file())
+        return tmp, files, request
+
+    def test_all_artifacts_isolated_and_expired_skipped(self):
+        _, files, request = self.download("123")
+        self.assertEqual(files, ["coverage/index.html", "dist/app.js", "dist/lib/util.js"])
+        self.assertEqual(request.call_args_list[0].args, ("GET", "repos/acme/app/actions/runs/123/artifacts"))
+
+    def test_single_name_extracts_into_dir(self):
+        _, files, _ = self.download("123", "-n", "dist")
+        self.assertEqual(files, ["app.js", "lib/util.js"])
+
+    def test_pattern_isolates(self):
+        _, files, _ = self.download("123", "-p", "cov*")
+        self.assertEqual(files, ["coverage/index.html"])
+
+    def test_no_run_id_uses_repo_artifacts(self):
+        _, _, request = self.download("-n", "dist")
+        self.assertEqual(request.call_args_list[0].args, ("GET", "repos/acme/app/actions/artifacts"))
+
+    def test_no_match_fails(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.download("123", "-n", "old")
+
+    def test_refuses_overwrite_and_zip_slip(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        Path(tmp, "a.txt").write_text("keep")
+        with self.assertRaisesRegex(gh.GhError, "already exists"):
+            gh.extract_artifact(io.BytesIO(zip_bytes({"a.txt": "new"})), tmp)
+        self.assertEqual(Path(tmp, "a.txt").read_text(), "keep")
+        with self.assertRaisesRegex(gh.GhError, "outside"):
+            gh.extract_artifact(io.BytesIO(zip_bytes({"../evil.txt": "x"})), tmp)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
 class BooleanOutputTests(unittest.TestCase):
     def test_boolean_scalars_use_json_spelling(self):
         for value, expected in [(True, 'true\n'), (False, 'false\n')]:
             with self.subTest(value=value), contextlib.redirect_stdout(io.StringIO()) as output:
                 gh.emit(value, None)
                 self.assertEqual(output.getvalue(), expected)
-
-
-if __name__ == "__main__":
-    unittest.main()

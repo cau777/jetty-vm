@@ -687,7 +687,10 @@ over stdin:
 `-R <owner/repo>`) is built into this `gh`, polling only
 `GET /repos/{owner}/{repo}/actions/runs/{run_id}` and its `/jobs` child — so
 the repository-scoped `api.github.com` Rule above covers it without a
-separate helper binary.
+separate helper binary. `gh run download [<run-id>]` (accepting `-D <dir>`,
+`-n <name>`, `-p <glob>`, and `-R`) likewise stays under
+`/repos/{owner}/{repo}/actions/...`; the artifact zip's redirect to blob
+storage is followed without forwarding the GitHub credential.
 
 Two `gh` operations genuinely have no REST equivalent in GitHub's API at
 all — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready` (marking

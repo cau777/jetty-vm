@@ -25,17 +25,20 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
-from typing import Callable
+from typing import BinaryIO, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 API_ROOT = "https://api.github.com"
 
@@ -161,6 +164,7 @@ def request(
     include: bool = False,
     limit: int | None = None,
     keep: Callable[[dict], bool] | None = None,
+    out: BinaryIO | None = None,
 ):
     """Issue one REST call (or, with paginate=True, follow every Link: next
     page and merge array results together). Returns parsed JSON, raw bytes
@@ -172,6 +176,9 @@ def request(
     holds at least `limit` items worth keeping (all of them, or only the
     ones `keep` accepts) — instead of always walking every page of the
     endpoint's full history before the caller truncates client-side.
+
+    out, if given, receives the response body as it streams in (for large
+    downloads like Actions artifacts) and request() returns None.
     """
     base_url = path if path.startswith("http://") or path.startswith("https://") else API_ROOT + "/" + path.lstrip("/")
     url = base_url
@@ -206,6 +213,9 @@ def request(
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
             with _OPENER.open(req) as resp:
+                if out is not None:
+                    shutil.copyfileobj(resp, out)
+                    return None
                 raw_body = resp.read()
                 link = resp.headers.get("Link", "")
                 if include:
@@ -856,6 +866,62 @@ def cmd_run_watch(args):
         time.sleep(args.interval)
 
 
+def extract_artifact(archive: BinaryIO, dest_dir: str) -> None:
+    # Same rules as the real gh: refuse entries that would land outside
+    # dest_dir (zip-slip) and never overwrite a file that already exists.
+    root = os.path.realpath(dest_dir)
+    os.makedirs(root, exist_ok=True)
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            target = os.path.realpath(os.path.join(root, info.filename))
+            if os.path.commonpath([root, target]) != root:
+                raise GhError(f"error extracting {info.filename!r}: would be outside {dest_dir}")
+            if info.is_dir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            try:
+                dst = open(target, "xb")
+            except FileExistsError:
+                raise GhError(f"error extracting {info.filename!r}: {target} already exists")
+            with dst, zf.open(info) as src:
+                shutil.copyfileobj(src, dst)
+
+
+def cmd_run_download(args):
+    owner, repo = resolve_repo(args.repo)
+    # Without a run ID the real gh (non-interactively) considers every
+    # artifact in the repo, newest first; with one, only that run's.
+    if args.run_id:
+        path = f"repos/{owner}/{repo}/actions/runs/{args.run_id}/artifacts"
+    else:
+        path = f"repos/{owner}/{repo}/actions/artifacts"
+    artifacts = request("GET", path, params={"per_page": 100}, paginate=True)
+
+    names, patterns = args.name or [], args.pattern or []
+    # One artifact picked by exact name goes straight into --dir; anything
+    # else gets a per-artifact subdirectory so their contents can't collide.
+    isolate = bool(patterns) or len(names) != 1
+
+    downloaded = set()
+    for a in artifacts:
+        if a.get("expired") or a["name"] in downloaded:
+            continue
+        if (names or patterns) and a["name"] not in names and not any(
+            fnmatch.fnmatchcase(a["name"], pat) for pat in patterns
+        ):
+            continue
+        dest = os.path.join(args.dir, a["name"]) if isolate else args.dir
+        with tempfile.TemporaryFile() as tmp:
+            request("GET", a["archive_download_url"], out=tmp)
+            tmp.seek(0)
+            extract_artifact(tmp, dest)
+        downloaded.add(a["name"])
+
+    if not downloaded:
+        raise GhError("no valid artifacts found to download")
+
+
 def cmd_run_rerun(args):
     owner, repo = resolve_repo(args.repo)
     suffix = "/rerun-failed-jobs" if args.failed else "/rerun"
@@ -1080,6 +1146,12 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--exit-status", action="store_true")
     c.add_argument("-i", "--interval", type=int, default=3)
     c.set_defaults(func=cmd_run_watch)
+
+    c = run.add_parser("download"); add_repo_flag(c); c.add_argument("run_id", nargs="?")
+    c.add_argument("-D", "--dir", default=".")
+    c.add_argument("-n", "--name", action="append")
+    c.add_argument("-p", "--pattern", action="append")
+    c.set_defaults(func=cmd_run_download)
 
     c = run.add_parser("rerun"); add_repo_flag(c); c.add_argument("run_id"); c.add_argument("--failed", action="store_true")
     c.set_defaults(func=cmd_run_rerun)
