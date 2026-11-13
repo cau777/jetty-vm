@@ -1,6 +1,6 @@
 """Rule matching / evaluation (design ticket #5).
 
-Pure decision logic — no I/O, no mitmproxy or aiohttp dependency, so it's
+Decision logic — no mitmproxy or aiohttp dependency, so it's
 directly unit-testable and reusable from both the future proxy addon and the
 request-logging layer. Callers pass in the Rule rows (already the shape
 produced by handlers/rules.py's _serialize / repo/rules.py) plus the live
@@ -21,6 +21,7 @@ intercepted:
 
 from dataclasses import dataclass, field
 
+from .aws_endpoints import signing_scope
 from .validation import is_safe_absolute_path, normalize_path
 
 ALLOW_DEFAULT = "allow_default"
@@ -52,10 +53,7 @@ def _selects_vm(vm_selector: dict, vm_name: str) -> bool:
 
 def _matches_hostname(pattern: str, hostname: str) -> bool:
     if pattern == "@aws":
-        return any(hostname.endswith("." + suffix) for suffix in (
-            "amazonaws.com", "amazonaws.com.cn", "api.aws", "api.amazonwebservices.com.cn",
-            "amazonaws.eu", "c2s.ic.gov", "sc2s.sgov.gov", "cloud.adc-e.uk", "csp.hci.ic.gov",
-        ))
+        return signing_scope(hostname) is not None
     if pattern.startswith("*."):
         # The dot boundary excludes the apex and lookalike suffixes.
         return hostname.endswith(pattern[1:]) and len(hostname) > len(pattern[1:])

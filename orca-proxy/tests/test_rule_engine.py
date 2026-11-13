@@ -253,6 +253,29 @@ def test_aws_endpoint_selector_covers_partitions_and_dualstack_only_for_selected
         assert not evaluate_connection(rules, 'secure-stack', host).intercepted
 
 
+@pytest.mark.parametrize('hostname', [
+    'app-alb-ed2ac38-1850627321.us-east-1.elb.amazonaws.com',
+    'example.us-east-1.compute.amazonaws.com',
+    'example.amazonaws.com',
+])
+def test_aws_endpoint_selector_leaves_hosted_applications_unintercepted(hostname):
+    rules = [_awc('aws', 10, '@aws', 'aws', '/')]
+    assert evaluate_connection(rules, 'vm', hostname).outcome == ALLOW_DEFAULT
+    assert evaluate_request(rules, 'vm', hostname, '/').outcome == ALLOW_DEFAULT
+
+
+@pytest.mark.parametrize('hostname', [
+    'elasticloadbalancing.us-east-1.amazonaws.com',
+    'bucket.s3.us-east-1.amazonaws.com',
+    'bedrock-runtime.us-east-1.amazonaws.com',
+    'ec2-fips.us-east-1.amazonaws.com',
+])
+def test_aws_endpoint_selector_keeps_supported_api_endpoints(hostname):
+    rules = [_awc('aws', 10, '@aws', 'aws', '/')]
+    assert evaluate_connection(rules, 'vm', hostname).intercepted
+    assert evaluate_request(rules, 'vm', hostname, '/').credential == 'aws'
+
+
 def test_vm_rules_always_precede_global_rules_with_duplicate_names_and_priorities():
     rules = [_block('shared', 0, 'api.github.com'), _allow('shared', 900, 'api.github.com', vms=['alpha'])]
     assert evaluate_connection(rules, 'alpha', 'api.github.com').outcome == ALLOW_RULE

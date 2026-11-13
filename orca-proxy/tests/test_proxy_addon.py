@@ -630,6 +630,23 @@ async def test_auto_aws_wrong_region_still_rejected(addon, tmp_path):
     assert not marker.exists()
 
 
+def test_aws_rule_does_not_intercept_application_load_balancer(addon):
+    _put_vm(addon)
+    _put_rule(addon, 'all-aws', 10, '@aws', {
+        'type': 'allow_with_credential', 'credential': 'aws', 'path_prefix': '/',
+        'injection': {'type': 'aws_sigv4', 'service': 'auto', 'region': 'auto'},
+    })
+    hello = _client_hello_data(
+        addon, sni='app-alb-ed2ac38-1850627321.us-east-1.elb.amazonaws.com',
+    )
+    addon.tls_clienthello(hello)
+    assert hello.ignore_connection is True
+    assert hello.context.client.error is None
+    row = addon._log.get_connection(hello.context.client.orca_connection_id)
+    assert row['intercepted'] is False
+    assert row['outcome'] == 'allow_default'
+
+
 async def test_one_aws_rule_signs_global_regional_and_dualstack_requests(addon):
     import json
     import shlex
