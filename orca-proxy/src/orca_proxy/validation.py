@@ -18,6 +18,16 @@ def validate_name(value: object, field: str = "name") -> str:
     return value
 
 
+def validate_rule_name(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", value):
+        raise ValidationFailed(
+            "'name' must be a lowercase slug (letters, digits, hyphens; "
+            "starting with a letter or digit)",
+            fields={"name": "invalid slug"},
+        )
+    return value
+
+
 def validate_ip_address(value: object, field: str = "ip_address") -> str:
     if not isinstance(value, str) or not _IPV4_RE.match(value):
         raise ValidationFailed(f"'{field}' must be a valid IPv4 address", fields={field: "invalid IPv4 address"})

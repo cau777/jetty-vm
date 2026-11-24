@@ -59,7 +59,7 @@ async def get_rule(request: web.Request) -> web.Response:
 
 async def put_rule(request: web.Request) -> web.Response:
     conn = db_conn(request)
-    name = validation.validate_name(request.match_info["name"])
+    name = validation.validate_rule_name(request.match_info["name"])
     body = await read_json_body(request)
     reject_unknown_fields(body, {"priority", "vm_selector", "hostname", "action"})
     requested_scope = _requested_scope(request)

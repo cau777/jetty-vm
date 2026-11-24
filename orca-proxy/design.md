@@ -140,7 +140,7 @@ are reported by `deploy/jetty-lxd status`: the proxy never talks to LXD.
 
 ## Validation rules (#9, `validation.py`)
 
-- **Names**: immutable lowercase slugs — `^[a-z0-9][a-z0-9-]{0,62}$`.
+- **Names**: immutable lowercase slugs — `^[a-z0-9][a-z0-9-]{0,62}$` for VMs and credentials; rule names use `[a-z0-9][a-z0-9-]*` with no length limit.
 - **Hostnames**: lowercase, trailing dot stripped, reject scheme/port/path; allow only a leading `*.` wildcard, or `@aws` to select AWS endpoint domains. Credential rules with `@aws` require AWS SigV4 injection.
 - **Path prefixes** (Allow-with-credential only): must start with `/`; reject
   `.`/`..` segments, percent-encoding, and empty segments (`is_safe_absolute_path`)
