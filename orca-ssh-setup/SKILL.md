@@ -87,10 +87,11 @@ for missing information:
 - **Base Ubuntu image** — Jetty currently defaults to `ubuntu:24.04`; use that unless
   the repo needs a specific OS version.
 - **Which coding-agent harness(es) to install** — Codex CLI (`@openai/codex`),
-  Claude Code (`@anthropic-ai/claude-code`), both, or neither. This decides
+  Claude Code (`@anthropic-ai/claude-code`), Google Antigravity CLI (`agy`),
+  any combination, or none. This decides
   what step 4 installs and which credential subsections of steps 3/6 apply.
   Reuse an explicit choice in the request; otherwise ask. The shipped
-  credential catalog covers Codex and Claude Code subscriptions. Pi or
+  credential catalog covers Codex, Claude Code, and Antigravity consumer subscriptions. Pi or
   OpenCode as the host provisioning agent does not supply a guest inference
   credential; establish the requested guest provider and auth method separately.
 - **Whether the VM needs GitHub access** (cloning, pushing, opening
@@ -204,6 +205,7 @@ put_credential() {
 put_credential github-host-login       # if GitHub access was requested
 put_credential codex-subscription      # if Codex was requested
 put_credential claude-code-subscription # if Claude Code was requested
+put_credential antigravity-subscription # if Google Antigravity CLI was requested
 ```
 
 Reuse existing Credentials, including user-customized commands. Every successful
@@ -236,6 +238,8 @@ Hand the user the exact command for whichever Credential is in `error`
 - `github-host-login` → `gh auth login` (on the **host**, not the VM)
 - `claude-code-subscription` → run `claude` and log in (on the **host**)
 - `codex-subscription` → `codex login` (on the **host**)
+- `antigravity-subscription` → run `agy` and sign in with a consumer account
+  (on the **host**, with its desktop keyring unlocked)
 
 Host logins are shared across projects and VM rebuilds. The user may need to
 log in again if a session expires or is revoked. Credential Values are picked up live on the next
@@ -340,7 +344,12 @@ the pinned version, package manager, system libs), then install project
 dependencies (`npm ci`, `pip install -r requirements.txt`, etc.) and confirm
 the project's normal build/test command succeeds.
 
-If any harness was requested in step 2, also install it now — the commands below use npm with Node.js 22 as a setup baseline. Honor the
+If Antigravity CLI was requested, follow the installation and authentication
+procedure in [references/antigravity.md](references/antigravity.md); it does
+not require Node.js.
+
+If Codex or Claude Code was requested in step 2, install it below. The Codex
+commands use npm with Node.js 22 as a setup baseline. Honor the
 project's runtime pins and check the selected CLI release's supported runtime
 before installation; use a separate harness runtime when necessary:
 
@@ -359,7 +368,7 @@ before installation; use a separate harness runtime when necessary:
 '
 ```
 
-Install both harnesses as `ubuntu`, never with `sudo`: a root-owned install
+Install the requested harnesses as `ubuntu`, never with `sudo`: a root-owned install
 can't auto-update. Claude Code's native installer lands in `~/.local/bin`,
 and Codex goes under a user-owned npm prefix so its updater's
 `npm install -g` works. Both directories reach `PATH` through `~/.profile`,
@@ -543,6 +552,11 @@ curl -fsS -X PUT "$API/vms/<vm-name>/rules/codex" \
                "path_prefix": "/", "injection": {"type": "bearer"}}
   }'
 ```
+
+For Google Antigravity CLI, read [references/antigravity.md](references/antigravity.md)
+for the Linux host keyring prerequisites, endpoint Rules, guest placeholder
+session, and actual inference verification. Its consumer login is separate
+from Gemini API keys and Google Cloud ADC; do not substitute either auth mode.
 
 ### Configure the harness(es) — no explicit proxy config
 
@@ -839,7 +853,7 @@ you just set up):
 5. Confirm the project directory Orca finds on the remote matches
    `~/<reponame>` (or wherever the repo was cloned in step 4).
 6. If a harness was installed, tell the user which one(s) are ready to use
-   with no further login step (`codex`, `claude`) — orca-proxy already
+   with no further login step (`codex`, `claude`, `agy`) — orca-proxy already
    injects their credentials transparently.
 7. If GitHub access was wired up, tell the user which repo(s) and
    operations were verified, and which paths receive credentials. Other paths
