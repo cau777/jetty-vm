@@ -38,20 +38,10 @@ def put(conn: sqlite3.Connection, name: str, ip_address: str) -> tuple[sqlite3.R
     return get(conn, name), False
 
 
-def referenced_by_rule(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1 FROM rules
-        WHERE json_extract(vm_selector_json, '$.type') = 'only'
-          AND EXISTS (
-            SELECT 1 FROM json_each(vm_selector_json, '$.vms') WHERE value = ?
-          )
-        LIMIT 1
-        """,
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
-def delete(conn: sqlite3.Connection, name: str) -> None:
-    conn.execute("DELETE FROM vms WHERE name = ?", (name,))
+def delete(conn: sqlite3.Connection, name: str) -> bool:
+    with conn:
+        conn.execute("BEGIN")
+        deleted = conn.execute("DELETE FROM vms WHERE name = ?", (name,)).rowcount > 0
+        if deleted:
+            conn.execute("DELETE FROM rules WHERE scope = ?", (name,))
+    return deleted

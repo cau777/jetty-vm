@@ -284,7 +284,7 @@ ApplicationWindow {
         Label {
             width: 360
             wrapMode: Text.Wrap
-            text: confirmation.action === "delete" ? (confirmation.kind === "vm" ? "This removes the VM and its LXD instance. This action cannot be undone." : "Delete this " + (confirmation.kind === "rules" ? "rule" : "credential") + "?") : "Jetty will " + confirmation.action + " this VM."
+            text: confirmation.action === "delete" ? (confirmation.kind === "vm" ? "This permanently removes the VM, its LXD instance, and its rules." : "Delete this " + (confirmation.kind === "rules" ? "rule" : "credential") + "?") : "Jetty will " + confirmation.action + " this VM."
             color: "#c3bcae"
         }
         onAccepted: {

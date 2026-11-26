@@ -85,21 +85,27 @@ async def test_delete_missing_vm_404(client):
     assert resp.status == 404
 
 
-async def test_delete_vm_referenced_by_rule_409(client):
+async def test_delete_vm_removes_only_its_rules(client):
     await client.put("/api/v1/vms/skills-dev", json={"ip_address": "10.0.0.1"})
-    await client.put(
-        "/api/v1/rules/allow-github",
-        json={
-            "priority": 10,
-            "vm_selector": {"type": "only", "vms": ["skills-dev"]},
-            "hostname": "github.com",
-            "action": {"type": "allow"},
-        },
-    )
-    resp = await client.delete("/api/v1/vms/skills-dev")
-    body = await resp.json()
-    assert resp.status == 409
-    assert body["error"]["code"] == "conflict"
+    await client.put("/api/v1/vms/other-vm", json={"ip_address": "10.0.0.2"})
+    for path, priority in [
+        ("/api/v1/vms/skills-dev/rules/allow-github", 10),
+        ("/api/v1/vms/skills-dev/rules/allow-github-api", 20),
+        ("/api/v1/vms/other-vm/rules/allow-github", 10),
+        ("/api/v1/rules/allow-github?scope=global", 10),
+    ]:
+        response = await client.put(
+            path, json={"priority": priority, "hostname": "github.com", "action": {"type": "allow"}}
+        )
+        assert response.status == 201
+
+    assert (await client.delete("/api/v1/vms/skills-dev")).status == 204
+    assert (await client.get("/api/v1/vms/skills-dev")).status == 404
+    response = await client.get("/api/v1/rules")
+    assert [(rule["scope"], rule["name"]) for rule in (await response.json())["rules"]] == [
+        ("", "allow-github"),
+        ("other-vm", "allow-github"),
+    ]
 
 
 async def test_delete_vm_only_referenced_via_all_selector_not_blocked(client):

@@ -51,12 +51,8 @@ async def put_vm(request: web.Request) -> web.Response:
 async def delete_vm(request: web.Request) -> web.Response:
     conn = db_conn(request)
     name = request.match_info["name"]
-    row = vms_repo.get(conn, name)
-    if row is None:
+    if not vms_repo.delete(conn, name):
         raise NotFound(f"VM '{name}' not found")
-    if vms_repo.referenced_by_rule(conn, name):
-        raise Conflict(f"VM '{name}' is referenced by a Rule; update or delete it first")
-    vms_repo.delete(conn, name)
     await request.app["port_forwards"].drop_vm(name)
     await request.app["reverse_forwards"].drop_vm(name)
     return web.Response(status=204)

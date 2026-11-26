@@ -348,8 +348,6 @@ class JettyLxd:
         name = validation.validate_name(name)
         if name == GATEWAY:
             raise Conflict("The Jetty gateway cannot be deleted as an agent VM")
-        if vms_repo.referenced_by_rule(self.db, name):
-            raise Conflict(f"VM '{name}' is referenced by a Rule; update or delete it first")
         async with LxdClient() as client:
             instance = await self._instance(client, name)
             if instance is not None:
@@ -362,9 +360,7 @@ class JettyLxd:
                 await client.request(
                     "DELETE", f"/1.0/instances/{quote(name, safe='')}"
                 )
-        existing = vms_repo.get(self.db, name)
-        if existing is not None:
-            vms_repo.delete(self.db, name)
+        vms_repo.delete(self.db, name)
         await self._sync_ssh_config()
 
     async def vm_action(self, name: str, action: str) -> dict[str, Any]:

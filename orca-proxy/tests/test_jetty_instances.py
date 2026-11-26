@@ -1,11 +1,11 @@
 """Exercise both provisioning paths, including the container storage/profile differences."""
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from orca_proxy import cli, jetty
 from orca_proxy.errors import ValidationFailed
-from orca_proxy.lxd import ExecResult, LxdNotFound
+from orca_proxy.lxd import ExecResult, LxdError, LxdNotFound
 
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test"
 
@@ -86,6 +86,32 @@ async def test_provisioning_preserves_network_and_bootstrap(monkeypatch, instanc
 async def test_invalid_instance_type_rejected_before_lxd(value):
     with pytest.raises(ValidationFailed, match="instance_type"):
         await jetty.JettyLxd(None).create_vm("test-agent", instance_type=value, ssh_key=KEY)
+
+
+@pytest.mark.parametrize("lxd_error", [None, LxdError("instance deletion failed")])
+async def test_delete_vm_removes_rules_after_lxd_deletion(client, monkeypatch, lxd_error):
+    lxd = MagicMock()
+    lxd.__aenter__.return_value = lxd
+    lxd.request = AsyncMock(side_effect=[{"status": "Stopped"}, lxd_error])
+    monkeypatch.setattr(jetty, "LxdClient", lambda: lxd)
+    monkeypatch.setattr(jetty.JettyLxd, "_sync_ssh_config", AsyncMock())
+    vm = "/api/v1/vms/test-agent"
+    rule = "/api/v1/rules/allow-github?scope=test-agent"
+    assert (await client.put(vm, json={"ip_address": "10.202.0.21"})).status == 201
+    response = await client.put(
+        rule, json={"priority": 10, "hostname": "github.com", "action": {"type": "allow"}}
+    )
+    assert response.status == 201
+
+    response = await client.delete("/api/v1/jetty/vms/test-agent")
+    assert response.status == (503 if lxd_error else 204)
+    assert lxd.request.await_args_list == [
+        call("GET", "/1.0/instances/test-agent"),
+        call("DELETE", "/1.0/instances/test-agent"),
+    ]
+    expected_status = 200 if lxd_error else 404
+    assert (await client.get(vm)).status == expected_status
+    assert (await client.get(rule)).status == expected_status
 
 
 @pytest.mark.parametrize("option,expected", [([], "virtual-machine"), (["--type", "container"], "container")])

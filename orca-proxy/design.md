@@ -93,7 +93,7 @@ GET    /api/v1/ca
 GET    /api/v1/vms
 GET    /api/v1/vms/{name}
 PUT    /api/v1/vms/{name}          -> 201 create / 200 replace
-DELETE /api/v1/vms/{name}          -> 204 / 404 / 409 if referenced by a Rule
+DELETE /api/v1/vms/{name}          -> 204 / 404
 
 GET    /api/v1/credentials
 GET    /api/v1/credentials/{name}
@@ -116,10 +116,9 @@ GET    /api/v1/requests/{id}       -- nested connection + child http_requests
 
 Collections are unpaginated and sorted (VMs/Credentials by name, Rules by
 priority) except `/api/v1/requests`, which uses keyset pagination (#11).
-`PUT` validates then writes inside one transaction — a failed validation
-never partially mutates the existing resource. `DELETE` on a VM/Credential
-still referenced by a Rule returns `409 Conflict`; there is no cascade, the
-caller must delete/update the referring Rule first.
+`PUT` validates then writes inside one transaction. `DELETE` on a VM removes
+its registration and all Rules scoped to it in one transaction. A Credential
+referenced by a Rule still returns `409 Conflict` on deletion.
 
 Errors use one envelope shape, `errors.py`:
 ```json

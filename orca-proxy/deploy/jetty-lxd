@@ -205,7 +205,6 @@ cmd_delete() {
   code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/vms/$name" || true)
   case $code in
     204|404) echo "$name deleted" ;;
-    409) echo "$name deleted; its orca-proxy registration is still referenced by a Rule — remove that Rule, then DELETE $API/vms/$name" >&2 ;;
     *) echo "$name deleted; unregistering from orca-proxy failed (HTTP $code)" >&2 ;;
   esac
 }
