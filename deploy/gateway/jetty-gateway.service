@@ -1,0 +1,12 @@
+[Unit]
+Description=Jetty gateway: redirect agent VM web traffic to local jetty-gw-agent
+After=network-online.target systemd-networkd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/jetty-gateway-up
+
+[Install]
+WantedBy=multi-user.target

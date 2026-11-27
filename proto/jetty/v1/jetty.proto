@@ -1,0 +1,635 @@
+syntax = "proto3";
+
+package jetty.v1;
+
+option go_package = "github.com/cau777/jetty-vm/gen/go/jetty/v1;jettyv1";
+
+service Jetty {
+  // Status and UI live stream
+  rpc GetStatus(GetStatusRequest) returns (Status);
+  rpc Watch(WatchRequest) returns (stream Event);
+
+  // VMs and gateway
+  rpc ListVms(ListVmsRequest) returns (ListVmsResponse);
+  rpc GetVm(GetVmRequest) returns (Vm);
+  rpc PutVm(PutVmRequest) returns (Vm);
+  rpc CreateVm(CreateVmRequest) returns (stream JobEvent);
+  rpc DeleteVm(DeleteVmRequest) returns (Empty);
+  rpc VmAction(VmActionRequest) returns (VmActionResponse);
+  rpc ExecVm(stream ExecVmRequest) returns (stream ExecVmResponse);
+  rpc UploadToVm(stream UploadToVmRequest) returns (UploadToVmResponse);
+  rpc HandoffVm(HandoffVmRequest) returns (HandoffVmResponse);
+  rpc SetupGateway(SetupGatewayRequest) returns (stream JobEvent);
+  rpc GetSshConfig(GetSshConfigRequest) returns (GetSshConfigResponse);
+
+  // Port forwards and reverse forwards
+  rpc ListPorts(ListPortsRequest) returns (ListPortsResponse);
+  rpc OpenPort(OpenPortRequest) returns (PortForward);
+  rpc UpdatePort(UpdatePortRequest) returns (PortForward);
+  rpc ClosePort(ClosePortRequest) returns (Empty);
+  rpc ListReversePorts(ListReversePortsRequest) returns (ListReversePortsResponse);
+  rpc OpenReversePort(OpenReversePortRequest) returns (ReverseForward);
+  rpc UpdateReversePort(UpdateReversePortRequest) returns (ReverseForward);
+  rpc CloseReversePort(CloseReversePortRequest) returns (Empty);
+
+  // Policy and CA
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc GetRule(GetRuleRequest) returns (Rule);
+  rpc PutRule(PutRuleRequest) returns (PutRuleResponse);
+  rpc DeleteRule(DeleteRuleRequest) returns (Empty);
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+  rpc GetCredential(GetCredentialRequest) returns (Credential);
+  rpc PutCredential(PutCredentialRequest) returns (PutCredentialResponse);
+  rpc DeleteCredential(DeleteCredentialRequest) returns (Empty);
+  rpc RefreshCredential(RefreshCredentialRequest) returns (Credential);
+  rpc GetQuickAddCatalog(Empty) returns (QuickAddCatalogResponse);
+  rpc GetCa(GetCaRequest) returns (Ca);
+
+  // Logs
+  rpc ListRequests(ListRequestsRequest) returns (ListRequestsResponse);
+  rpc GetRequest(GetRequestRequest) returns (RequestDetail);
+  rpc TailRequests(TailRequestsRequest) returns (stream RequestEvent);
+
+  // Traffic decisions, called by the gateway agent
+  rpc Hello(GatewayHello) returns (GatewayConfig);
+  rpc ResolveSource(SourceInfo) returns (SourceDecision);
+  rpc DecideConnection(ConnectionInfo) returns (ConnectionDecision);
+  rpc DecideRequest(RequestInfo) returns (RequestDecision);
+  rpc Report(stream GatewayEvent) returns (Empty);
+}
+
+message Empty {}
+
+message GetStatusRequest {}
+
+message Status {
+  string state = 1; // running | waiting_for_network | not_configured | stopped | failed
+  string daemon = 2; // running | starting | stopping | stopped
+  bool lxd_available = 3;
+  string lxd_socket = 4;
+  bool network_ready = 5;
+  string gateway = 6; // running | stopped | missing | ...
+  string gateway_service = 7; // active | inactive | unknown
+  string gateway_agent_service = 8; // active | inactive | unknown
+  string gateway_agent_version = 9;
+  string gateway_error = 10;
+  repeated Vm vms = 11;
+  string message = 12;
+}
+
+message WatchRequest {}
+
+message Event {
+  string kind = 1; // status | vms | rules | credentials | ports | reverse_ports | connection | http_request
+  string resource_id = 2;
+  string occurred_at = 3;
+}
+
+// --- VMs & Gateway ---
+
+message ListVmsRequest {}
+
+message ListVmsResponse {
+  repeated Vm vms = 1;
+}
+
+message GetVmRequest {
+  string name = 1;
+}
+
+message PutVmRequest {
+  string name = 1;
+  string ip_address = 2;
+}
+
+message Vm {
+  string name = 1;
+  string ip_address = 2;
+  string instance_type = 3; // virtual-machine | container
+  string status = 4; // Running | Stopped | ...
+  string cpus = 5;
+  string memory = 6;
+  string disk = 7;
+  string created_at = 8;
+  string updated_at = 9;
+}
+
+message CreateVmRequest {
+  string name = 1;
+  int32 cpus = 2;
+  string memory = 3;
+  string disk = 4;
+  string image = 5;
+  string instance_type = 6;
+  string ssh_public_key = 7;
+}
+
+message DeleteVmRequest {
+  string name = 1;
+}
+
+message VmActionRequest {
+  string name = 1;
+  string action = 2; // start | stop | restart
+}
+
+message VmActionResponse {
+  string name = 1;
+  string status = 2;
+}
+
+message ExecVmStart {
+  string name = 1;
+  repeated string command = 2;
+}
+
+message ExecVmRequest {
+  oneof payload {
+    ExecVmStart start = 1;
+    bytes stdin_chunk = 2;
+    bool close_stdin = 3;
+  }
+}
+
+message ExecVmResponse {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  bool exited = 3;
+  int32 exit_code = 4;
+}
+
+message UploadMetadata {
+  string name = 1;
+  string path = 2;
+  uint32 mode = 3;
+  string owner = 4; // ubuntu | root
+}
+
+message UploadToVmRequest {
+  oneof payload {
+    UploadMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadToVmResponse {
+  string path = 1;
+  int64 bytes_written = 2;
+}
+
+message HandoffVmRequest {
+  string name = 1;
+  string agent = 2;
+  string project_dir = 3;
+}
+
+message HandoffVmResponse {
+  string agent = 1;
+  string label = 2;
+  bool skill_install = 3;
+  string terminal = 4;
+  string project_dir = 5;
+  string jetty = 6;
+}
+
+message SetupGatewayRequest {
+  string ssh_public_key = 1;
+}
+
+message JobStep {
+  string key = 1;
+  string label = 2;
+  string status = 3; // pending | running | done | failed
+}
+
+message JobEvent {
+  string job_id = 1;
+  string kind = 2; // gateway_setup | vm_create
+  string target = 3;
+  string state = 4; // running | done | failed
+  string current_step = 5;
+  repeated JobStep steps = 6;
+  string error_message = 7;
+  Vm vm = 8;
+  string gateway = 9;
+}
+
+message GetSshConfigRequest {
+  repeated string names = 1;
+}
+
+message GetSshConfigResponse {
+  string config = 1;
+}
+
+// --- Port Forwards ---
+
+message ListPortsRequest {
+  string vm_name = 1;
+}
+
+message ListPortsResponse {
+  repeated PortForward ports = 1;
+}
+
+message OpenPortRequest {
+  string vm_name = 1;
+  int32 vm_port = 2;
+  int32 host_port = 3; // 0 means default to vm_port
+  bool persistent = 4;
+}
+
+message UpdatePortRequest {
+  string vm_name = 1;
+  int32 host_port = 2;
+  bool persistent = 3;
+}
+
+message ClosePortRequest {
+  string vm_name = 1;
+  int32 host_port = 2;
+}
+
+message PortForward {
+  string vm_name = 1;
+  int32 vm_port = 2;
+  int32 host_port = 3;
+  bool persistent = 4;
+  string state = 5; // starting | active | retrying
+  string error = 6;
+  string url = 7;
+}
+
+message ListReversePortsRequest {
+  string vm_name = 1;
+}
+
+message ListReversePortsResponse {
+  repeated ReverseForward ports = 1;
+}
+
+message OpenReversePortRequest {
+  string vm_name = 1;
+  int32 host_port = 2;
+  int32 vm_port = 3; // 0 means default to host_port
+  bool persistent = 4;
+}
+
+message UpdateReversePortRequest {
+  string vm_name = 1;
+  int32 vm_port = 2;
+  bool persistent = 3;
+}
+
+message CloseReversePortRequest {
+  string vm_name = 1;
+  int32 vm_port = 2;
+}
+
+message ReverseForward {
+  string vm_name = 1;
+  int32 vm_port = 2;
+  int32 host_port = 3;
+  bool persistent = 4;
+  string state = 5;
+  string error = 6;
+}
+
+// --- Policy & CA ---
+
+message VmSelector {
+  string type = 1; // all | only
+  repeated string vms = 2;
+}
+
+message Injection {
+  string type = 1; // bearer | basic | header | aws_sigv4
+  string username = 2; // for basic
+  string name = 3; // for header
+  string service = 4; // for aws_sigv4
+  string region = 5; // for aws_sigv4
+}
+
+message RuleAction {
+  string type = 1; // allow | block | allow_with_credential
+  string credential = 2;
+  string path_prefix = 3;
+  Injection injection = 4;
+}
+
+message Rule {
+  string name = 1;
+  string scope = 2; // "" for global, VM name otherwise
+  int32 priority = 3;
+  VmSelector vm_selector = 4;
+  string hostname = 5;
+  RuleAction action = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message ListRulesRequest {
+  string vm_name = 1; // when set, lists VM-scoped rules for this VM
+  bool global_only = 2; // when true, lists only global rules
+}
+
+message ListRulesResponse {
+  repeated Rule rules = 1;
+}
+
+message GetRuleRequest {
+  string name = 1;
+  string scope = 2; // "" for global or unique lookup
+  bool scope_specified = 3;
+}
+
+message PutRuleRequest {
+  string name = 1;
+  int32 priority = 2;
+  VmSelector vm_selector = 3;
+  string hostname = 4;
+  RuleAction action = 5;
+}
+
+message PutRuleResponse {
+  Rule rule = 1;
+  bool created = 2;
+}
+
+message DeleteRuleRequest {
+  string name = 1;
+  string scope = 2;
+  bool scope_specified = 3;
+}
+
+message Credential {
+  string name = 1;
+  string command = 2;
+  int32 ttl_seconds = 3;
+  string created_at = 4;
+  string updated_at = 5;
+  string status = 6; // empty | refreshing | valid | error
+  double expires_at = 7;
+  bool has_expires_at = 8;
+  double last_success_at = 9;
+  bool has_last_success_at = 10;
+  double last_failure_at = 11;
+  bool has_last_failure_at = 12;
+  string failure_category = 13;
+}
+
+message ListCredentialsRequest {}
+
+message ListCredentialsResponse {
+  repeated Credential credentials = 1;
+}
+
+message GetCredentialRequest {
+  string name = 1;
+}
+
+message PutCredentialRequest {
+  string name = 1;
+  string command = 2;
+  int32 ttl_seconds = 3;
+}
+
+message PutCredentialResponse {
+  Credential credential = 1;
+  bool created = 2;
+}
+
+message DeleteCredentialRequest {
+  string name = 1;
+}
+
+message RefreshCredentialRequest {
+  string name = 1;
+}
+
+message QuickAddEntry {
+  string key = 1;
+  string display_name = 2;
+  string command = 3;
+  int32 ttl_seconds = 4;
+  string notes = 5;
+}
+
+message QuickAddCatalogResponse {
+  repeated QuickAddEntry entries = 1;
+}
+
+message GetCaRequest {
+  bool include_private_key = 1;
+}
+
+message Ca {
+  string certificate_pem = 1;
+  string private_key_pem = 2; // populated only when include_private_key = true
+  string fingerprint_sha256 = 3;
+  string subject = 4;
+  string not_before = 5;
+  string not_after = 6;
+}
+
+// --- Logs ---
+
+message RuleSnapshot {
+  string name = 1;
+  string scope = 2;
+  int32 priority = 3;
+  string action_type = 4;
+}
+
+message TraceEntry {
+  string rule_name = 1;
+  string scope = 2;
+  int32 priority = 3;
+  string action_type = 4;
+  string result = 5;
+}
+
+message LoggedHeader {
+  string name = 1;
+  string value = 2;
+  bool redacted = 3;
+  string redaction_reason = 4;
+}
+
+message ConnectionLog {
+  int64 id = 1;
+  string started_at = 2;
+  string vm_name = 3;
+  string destination_ip = 4;
+  int32 destination_port = 5;
+  string destination_hostname = 6;
+  bool sni_present = 7;
+  bool ech_present = 8;
+  int64 duration_ms = 9;
+  bool has_duration_ms = 10;
+  bool intercepted = 11;
+  string outcome = 12;
+  RuleSnapshot matched_rule = 13;
+  RuleSnapshot intercepted_by_rule = 14;
+}
+
+message HttpRequestLog {
+  int64 id = 1;
+  int64 connection_id = 2;
+  string occurred_at = 3;
+  string method = 4;
+  string path = 5;
+  repeated string query_keys = 6;
+  int32 status = 7;
+  bool has_status = 8;
+  string status_origin = 9;
+  int64 latency_ms = 10;
+  bool has_latency_ms = 11;
+  string outcome = 12;
+  RuleSnapshot matched_rule = 13;
+  string matched_credential = 14;
+  repeated TraceEntry trace = 15;
+  repeated LoggedHeader headers = 16;
+}
+
+message ListRequestsRequest {
+  int64 before_id = 1;
+  int64 after_id = 2;
+  int32 limit = 3;
+  string vm_name = 4;
+  string host = 5;
+  string decision = 6;
+  int32 status = 7;
+  string since = 8;
+  string until = 9;
+}
+
+message ListRequestsResponse {
+  repeated ConnectionLog connections = 1;
+}
+
+message GetRequestRequest {
+  int64 id = 1;
+}
+
+message RequestDetail {
+  ConnectionLog connection = 1;
+  repeated HttpRequestLog http_requests = 2;
+}
+
+message TailRequestsRequest {
+  string vm_name = 1;
+  string decision = 2;
+  int64 after_id = 3;
+}
+
+message RequestEvent {
+  string kind = 1; // connection | http_request
+  ConnectionLog connection = 2;
+  HttpRequestLog http_request = 3;
+}
+
+// --- Gateway Traffic Decisions ---
+
+message GatewayHello {
+  string agent_version = 1;
+}
+
+message GatewayConfig {
+  string expected_version = 1;
+  int64 max_intercept_body_bytes = 2;
+}
+
+message SourceInfo {
+  string source_ip = 1;
+  string dest_ip = 2;
+  uint32 dest_port = 3;
+}
+
+message SourceDecision {
+  bool allowed = 1;
+  string vm_name = 2;
+  string connection_id = 3;
+  string error_message = 4;
+}
+
+message ConnectionInfo {
+  string source_ip = 1;
+  string dest_ip = 2;
+  uint32 dest_port = 3;
+  string sni = 4;
+  bool ech_present = 5;
+}
+
+message Passthrough {}
+message Intercept {}
+
+message ConnectionDecision {
+  string connection_id = 1;
+  oneof action {
+    Passthrough passthrough = 2;
+    Intercept intercept = 3;
+  }
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+message RequestInfo {
+  string connection_id = 1;
+  string source_ip = 7;
+  string method = 2;
+  string host = 3;
+  string path = 4; // URL path (without query)
+  repeated Header headers = 5;
+  bytes body_sha256 = 6;
+  string scheme = 8; // https | http
+  uint32 dest_port = 9;
+  string host_header = 10;
+  string raw_path = 11; // raw path + query from HTTP request
+  bool has_body = 12;
+}
+
+message Forward {
+  repeated Header set_headers = 1;
+  repeated string remove_headers = 2;
+}
+
+message Synthesize {
+  int32 status_code = 1;
+  bytes body = 2;
+  repeated Header headers = 3;
+}
+
+message RequestDecision {
+  oneof action {
+    Forward forward = 1;
+    Synthesize respond = 2;
+  }
+  string request_id = 3;
+}
+
+message RequestCompleted {
+  string request_id = 1;
+  string connection_id = 2;
+  int32 status_code = 3;
+  bool has_status = 4;
+  string status_origin = 5;
+  int64 latency_ms = 6;
+  bool has_latency_ms = 7;
+  string error = 8;
+}
+
+message ConnectionClosed {
+  string connection_id = 1;
+  int64 duration_ms = 2;
+}
+
+message GatewayEvent {
+  oneof event {
+    RequestCompleted request_completed = 1;
+    ConnectionClosed connection_closed = 2;
+  }
+}

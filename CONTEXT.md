@@ -5,15 +5,15 @@ A single-host service that governs outbound HTTP(S) access for registered LXD VM
 ## Language
 
 **Management API**:
-The loopback-only interface through which host-side tools and the Web UI manage VMs, Credentials, Rules, and logs. It is not reachable from registered VMs.
+The ConnectRPC/gRPC h2c interface (`jettyd` on `127.0.0.1:7700` for host clients, and `10.201.0.1:7700` with peer-IP and bearer-token auth for the Gateway) through which the `jetty` CLI, `jetty-desktop`, and `jetty-gw-agent` interact with Jetty. It is not reachable from registered VMs.
 _Avoid_: Proxy API, VM API
 
-**Proxy Listener**:
-The WireGuard tunnel endpoint (mitmdump's userspace WireGuard mode) that receives forced outbound traffic from registered VMs via the Gateway. It grants no management authority.
-_Avoid_: Management API
+**Gateway Agent**:
+The transparent `mitmproxy` service (`jetty-gw-agent`) running inside the Gateway VM. It intercepts redirected TCP 80/443 from registered VMs via local `iptables REDIRECT` and asks `jettyd` for per-connection and per-request decisions over `10.201.0.1:7700`. It stores no policy, credentials, or logs.
+_Avoid_: Host proxy, WireGuard listener
 
 **Gateway**:
-The trusted LXD VM (`jetty-gw`) that is the only route out of the private agent network. It sends agent TCP 80/443 to the Proxy Listener without rewriting source addresses, and NATs other permitted traffic.
+The trusted LXD VM (`jetty-gw`) that is the only route out of the private agent network. It redirects agent TCP 80/443 to `jetty-gw-agent` locally without rewriting source addresses, and NATs other permitted non-private traffic.
 _Avoid_: Router, proxy VM
 
 **VM**:

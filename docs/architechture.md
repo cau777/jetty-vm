@@ -1,6 +1,6 @@
 # Centralized architecture
 
-Status: draft. Open decisions are listed at the end.
+Status: implemented across Go `jettyd`/`jetty` CLI, `gateway-agent`, and Wails `jetty-desktop`.
 
 ## Motivation
 
@@ -394,10 +394,7 @@ done in any order, or never.
    and static, but rich tables and editors take much more work in them.
    Tauri would add Rust as a second backend language.
 
-## Open decisions
+## Resolved decisions
 
-1. **Gateway agent upgrades.** `jettyd` pushes the agent at `SetupGateway` and
-   refuses `Hello` on a version mismatch. Should a mismatch trigger an
-   automatic re-push, or require `jetty gateway setup`?
-2. **mitmproxy in the gateway.** Install it from pinned wheels at gateway setup
-   (needs gateway egress at setup time) or bake it into a Jetty gateway image.
+1. **Gateway agent upgrades.** On a `Hello` version mismatch, `jettyd` refuses `Hello` (`FAILED_PRECONDITION`) and triggers an automatic single-flight LXD re-push of `jetty-gw-agent` and restarts `jetty-gw-agent.service`.
+2. **mitmproxy in the gateway.** `jetty gateway setup` installs pinned `mitmproxy==10.4.2`, `grpcio==1.68.1`, and `protobuf==5.27.3` into `/opt/jetty-gw-agent/.venv` inside `jetty-gw`.

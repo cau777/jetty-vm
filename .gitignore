@@ -2,3 +2,10 @@ skills-lock.json
 .agents
 .claude
 **/__pycache__
+.pytest_cache/
+gateway-agent/.venv/
+desktop/build/
+desktop/frontend/node_modules/
+desktop/frontend/dist/
+desktop/frontend/wailsjs/
+desktop/frontend/package.json.md5

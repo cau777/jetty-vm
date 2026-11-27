@@ -24,39 +24,28 @@ Jetty reduces the cost of creating a truly isolated environment. You can create 
 ## How it works
 
 ```text
-your agent → dedicated LXD VM → Jetty gateway VM ─(WireGuard)→ host orca-proxy → approved service
-                                                                  └─ host-held credential, only when a rule matches
+your agent → dedicated LXD VM → Jetty gateway VM (jetty-gw-agent / transparent mitmproxy)
+                                    │
+                                    └─(gRPC h2c on 10.201.0.1:7700 + bearer token)─▶ host jettyd
+                                                                                        └─ host-held credential, only when a rule matches
 ```
 
-The host service has a loopback-only management API for registering VMs,
-credentials, and rules. Registered VMs do not receive management authority.
-The gateway sends their HTTP(S) traffic (TCP 80/443) to the proxy through a
-WireGuard tunnel that ends in the unprivileged proxy process itself; unmatched
-traffic is passed through without credentials. If the proxy, the tunnel, or
-the gateway is down, agent VMs have no web egress at all.
+The host daemon (`jettyd`, started via `jetty daemon`) owns all state (`state.sqlite` and `requests.sqlite`), the Interception CA, LXD lifecycle, SSH port/reverse forwards, and Credential execution. It serves one ConnectRPC/gRPC h2c protocol on `127.0.0.1:7700` (for the `jetty` CLI and `jetty-desktop`) and `10.201.0.1:7700` (exclusively for `jetty-gw` at `10.201.0.2` with a bearer token). Inside the gateway VM, `jetty-gw-agent` runs `mitmproxy` in transparent mode via local `iptables REDIRECT` and asks `jettyd` for per-connection and per-request decisions. If `jettyd`, `jetty-gw-agent`, or the gateway is down, agent VMs have no web egress at all (fail-closed).
 
 ## Use it
 
-Download the x86_64 AppImage and run setup as your desktop user:
+Download the `jetty` static Linux binary and run setup as your desktop user:
 
 ```bash
-curl -fL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-x86_64.AppImage \
-  -o "$HOME/Downloads/jetty-x86_64.AppImage"
-chmod +x "$HOME/Downloads/jetty-x86_64.AppImage"
-"$HOME/Downloads/jetty-x86_64.AppImage" setup
+curl -fL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-linux-amd64 \
+  -o "$HOME/Downloads/jetty"
+chmod +x "$HOME/Downloads/jetty"
+"$HOME/Downloads/jetty" setup
 ```
 
-Setup installs `~/.local/bin/jetty`, starts the per-user daemon, registers the
-tray app for desktop login, and installs the agent skill when `npx` is
-available. It uses `pkexec` to install and initialize snap LXD and add your
-account to the `lxd` group. LXD group access is equivalent to root access on
-the host. Sign out and back in after setup; reboot if the daemon still cannot
-access LXD afterward.
+Setup installs `~/.local/bin/jetty`, starts `jetty-daemon.service`, and installs the agent skill when `npx` is available. It uses `pkexec` to install and initialize snap LXD and add your account to the `lxd` group. LXD group access is equivalent to root access on the host. Sign out and back in after setup; reboot if the daemon still cannot access LXD afterward.
 
-Use the tray menu to create the gateway, then manage agent VMs in Jetty. The
-same operations are available from a terminal with `jetty status`,
-`jetty gateway setup`, and `jetty vm create`. `jetty update` installs the
-latest release after verifying its published SHA-256 checksum.
+Use `jetty-desktop` (the Wails desktop app) or the `jetty` CLI (`jetty status`, `jetty gateway setup`, `jetty vm create`, `jetty rule put`, `jetty credential put`, `jetty log list`) to manage the gateway and agent VMs. `jetty update` installs the latest release after verifying its published SHA-256 checksum.
 
 VMs are the default. Choose **LXD container** in the creation form or run
 `jetty vm create my-container --type container` for an unprivileged container
@@ -84,20 +73,38 @@ the agent in the VM.
 `orca-ssh-setup/` into your coding agent using that agent's skill manager.
 - Codex or Claude Code on the host if you want to use those harnesses.
 
-The proxy daemon and tray run as your user. LXD owns the bridges, and routing
+The proxy daemon runs as your user. LXD owns the bridges, and routing
 policy lives inside the gateway VM; Jetty does not install a host firewall
 rule or privileged helper.
 
 ## Project layout
 
-- [`orca-ssh-setup/`](orca-ssh-setup/) — the installable agent skill and
-end-to-end provisioning workflow.
-- [`orca-proxy/`](orca-proxy/) — daemon, tray, management UI, LXD REST client,
-CLI, transparent proxy, and credential execution.
+- [`proto/jetty/v1/jetty.proto`](proto/jetty/v1/jetty.proto) — single ConnectRPC/gRPC protocol definition.
+- [`cmd/jetty/`](cmd/jetty/) & [`internal/`](internal/) — static Go `jetty` CLI and `jettyd` central daemon (`jetty daemon`).
+- [`gateway-agent/`](gateway-agent/) & [`deploy/gateway/`](deploy/gateway/) — Python transparent `mitmproxy` gateway agent and gateway iptables/systemd scripts.
+- [`desktop/`](desktop/) — Wails v2 desktop app (`jetty-desktop`) sharing the generated Go ConnectRPC client.
+- [`orca-ssh-setup/`](orca-ssh-setup/) — installable agent skill and end-to-end provisioning workflow.
+- [`tests/`](tests/) — cross-language integration and LXD gateway e2e checks.
 - [`CONTEXT.md`](CONTEXT.md) — the project's domain vocabulary.
 
-For development and the source installer, see
-[`orca-proxy/README.md`](orca-proxy/README.md).
+## Development & Tests
+
+```bash
+# Regenerate Go and Python protobuf stubs
+./scripts/gen-proto.sh
+
+# Build static jetty CLI/daemon binary and run Go unit/golden/security tests
+CGO_ENABLED=0 go build ./cmd/jetty
+go test ./...
+
+# Run gateway-agent tests and Go<->Python cross-language integration test
+cd gateway-agent && uv run pytest -v && cd ..
+gateway-agent/.venv/bin/pytest -v -c gateway-agent/pyproject.toml tests/integration/test_gateway_to_jettyd.py
+
+# Build and test Wails desktop client
+cd desktop/frontend && npm install && npm run build && cd ..
+go test ./... && wails build -tags webkit2_41
+```
 
 ## Security model
 
@@ -107,6 +114,4 @@ not a general-purpose network sandbox or a substitute for reviewing the
 permissions you grant in each rule. Keep rules specific to the VM, hostname,
 path, and operation the agent needs.
 
-The desktop manager is a native PySide6 Qt Quick application. It keeps its
-loopback API in the separate daemon process, so a desktop UI failure does not
-stop VM web egress.
+The desktop manager is a standalone Wails application (`jetty-desktop`) talking to `jettyd` over loopback `127.0.0.1:7700`, so closing or crashing the UI never stops VM web egress.

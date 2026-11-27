@@ -1,0 +1,16 @@
+[Unit]
+Description=Jetty gateway transparent mitmproxy agent
+After=jetty-gateway.service
+Requires=jetty-gateway.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/jetty-gateway/env
+RuntimeDirectory=jetty-gw-agent
+RuntimeDirectoryMode=0700
+ExecStart=/opt/jetty-gw-agent/.venv/bin/mitmdump --mode transparent --listen-host 0.0.0.0 --listen-port 8080 --set confdir=/run/jetty-gw-agent -s /opt/jetty-gw-agent/run_addon.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
