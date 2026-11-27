@@ -384,18 +384,11 @@ the target repo's own `AGENTS.md`/`CLAUDE.md`) covering these points:
 
 - It's running in a disposable-feeling but actually persistent VM
   with full sudo, so the agent doesn't over-hedge on system changes.
-- If GitHub access was requested, `gh` here is **not** the real GitHub CLI —
-  it's `gh-rest.py` (see step 6), installed at `/usr/local/bin/gh`, which
-  implements the same subcommands (`pr`, `issue`, `workflow`, `run`, `api`,
-  `auth status`) entirely against the REST API, since the Rules set up in
-  step 6 only cover specific REST paths on `api.github.com` and GitHub's
-  GraphQL endpoint (`api.github.com/graphql`) isn't one of them. Day-to-day
-  usage is unchanged (`gh pr create`, `gh issue list`, `gh api ...`, etc. all
-  work as expected). Two operations have no REST equivalent at all in
-  GitHub's API — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready`
-  (marking a draft PR ready for review) — are handled differently: `merge --auto` errors, while `pr ready` prints
-  manual instructions and exits successfully without changing the PR. Complete
-  those operations in the GitHub web UI.
+- If GitHub access was requested, the VM uses `gh-rest` at `/usr/local/bin/gh`.
+  Use repository-scoped REST commands such as `gh issue list` and `gh api repos/<org>/<repo>/issues`.
+  orca-proxy injects credentials for matching Rules. Verify access with a
+  covered repository endpoint because the account-level `/user` endpoint is
+  outside those Rules.
 
 ## 5. Set up SSH access
 
@@ -674,60 +667,62 @@ own is a sensible default:
 "$JETTY" vm exec <vm-name> -- git config --global user.email "$(git config --global user.email)"
 ```
 
-Install `gh` as `gh-rest.py` — a REST-only reimplementation of the `gh`
-subcommands this project needs, **not** the real GitHub CLI. The reason:
-the real `gh` binary routes several common subcommands (`gh pr create`,
-`gh run watch`, ...) through GitHub's GraphQL endpoint, and the Rules above
-only allow-list specific REST paths on `api.github.com` — GraphQL isn't one
-of them, by design (a Rule that also had to allow-list arbitrary GraphQL
-queries wouldn't meaningfully restrict anything). Rather than keep
-documenting one-off REST workarounds per GraphQL-backed subcommand, this
-installs a `gh` that only ever speaks REST in the first place, so ordinary
-usage (`gh pr create`, `gh issue list`, `gh run watch`, `gh api ...`) just
-works unmodified. It needs `python3` and `jq` (`--jq` filtering shells out to it rather than
-reimplementing jq's expression language), both installed in step 4.
+Install the latest [cau777/gh-rest release](https://github.com/cau777/gh-rest/releases/latest)
+as `/usr/local/bin/gh`. The fork supports REST workflows under the
+repository-scoped GitHub Rules.
 
-Its complete source lives in the installed release at `gh-rest/gh-rest.py` —
-read it from there rather than a checkout's `main` branch, and pipe it in
-over stdin:
+Run this as the VM user with `curl` and `jq` installed. It selects the Linux
+archive for the VM architecture and verifies the release checksum before installing.
 
 ```bash
-"$JETTY" vm upload <vm-name> /usr/local/bin/gh --owner root --mode 0755 \
-  --file "$JETTY_TOOLS_DIR/gh-rest.py"
-"$JETTY" vm exec <vm-name> -- gh --help
+"$JETTY" vm exec <vm-name> -- bash -c "$(cat <<'BASH'
+set -euo pipefail
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64) arch=arm64 ;;
+  *) echo "Unsupported gh-rest architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
+cd "$workdir"
+release=$(curl -fsSL https://api.github.com/repos/cau777/gh-rest/releases/latest)
+version=$(jq -er '.tag_name | ltrimstr("v")' <<<"$release")
+archive="gh_${version}_linux_${arch}.tar.gz"
+checksums="gh_${version}_checksums.txt"
+for asset in "$archive" "$checksums"; do
+  url=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .browser_download_url' <<<"$release")
+  curl -fsSL "$url" -o "$asset"
+done
+awk -v archive="$archive" '$2 == archive' "$checksums" | sha256sum -c
+tar -xzf "$archive" "gh_${version}_linux_${arch}/bin/gh"
+sudo install -m 0755 "gh_${version}_linux_${arch}/bin/gh" /usr/local/bin/gh
+gh --version
+BASH
+)"
 ```
 
-`gh run watch <run-id>` (accepting `--exit-status`, `-i <seconds>`, and
-`-R <owner/repo>`) is built into this `gh`, polling only
-`GET /repos/{owner}/{repo}/actions/runs/{run_id}` and its `/jobs` child — so
-the repository-scoped `api.github.com` Rule above covers it without a
-separate helper binary. `gh run download [<run-id>]` (accepting `-D <dir>`,
-`-n <name>`, `-p <glob>`, and `-R`) likewise stays under
-`/repos/{owner}/{repo}/actions/...`; the artifact zip's redirect to blob
-storage is followed without forwarding the GitHub credential.
-
-Two `gh` operations genuinely have no REST equivalent in GitHub's API at
-all — `gh pr merge --auto` (enabling auto-merge) and `gh pr ready` (marking
-a draft PR ready for review), both GraphQL-only mutations — and this `gh`
-rejects `merge --auto`, while `pr ready` prints the PR URL and manual
-instructions, then exits 0 without changing readiness. Complete both through
-the GitHub web UI; an exit code of 0 from `pr ready` does not prove completion.
-
-`gh` reads `GH_TOKEN` (falling back to `GITHUB_TOKEN`) but doesn't require
-either to be set — with neither set it sends no `Authorization` header at
-all, which lets unmatched paths fall through to GitHub as a normal anonymous
-request instead of a hard failure. Set a global placeholder anyway, so the
-common case (`gh api repos/<org>/<repo>/...`) always sends *some*
-`Authorization` header for the Rule to overwrite — `GH_TOKEN` only affects
-`gh`, not npm/curl/other tools in the VM:
+Store the literal placeholder manually as the VM user. `gh auth login --with-token`
+validates against GitHub and rejects the placeholder. Use the effective config
+directory, `${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}`. If `hosts.yml`
+already exists, merge the `github.com.oauth_token` entry while preserving other
+settings.
 
 ```bash
-"$JETTY" vm exec <vm-name> -- bash -c "
-  sudo sed -i '/^GH_TOKEN=/d' /etc/environment
-  printf 'GH_TOKEN=placeholder\n' | sudo tee -a /etc/environment >/dev/null
-  printf 'export GH_TOKEN=placeholder\n' | sudo tee /etc/profile.d/orca-proxy-gh.sh >/dev/null
-"
+"$JETTY" vm exec <vm-name> -- bash -c "$(cat <<'BASH'
+set -euo pipefail
+config_dir="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+umask 077
+mkdir -p "$config_dir"
+set -o noclobber
+printf '%s\n' 'github.com:' '    oauth_token: placeholder' > "$config_dir/hosts.yml"
+BASH
+)"
 ```
+
+Verify the stored token with
+`test "$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token --hostname github.com)" = placeholder`
+inside the VM. Unset both environment variables for the API smoke tests so
+they exercise the stored config even on a VM with a legacy environment placeholder.
 
 Verify both the allowed and unmatched paths — **note the changed semantics
 from the old gh-proxy**: an unmatched path is no longer a proxy-generated
@@ -737,23 +732,18 @@ real anonymous-request response, not a block signature:
 
 ```bash
 # allowed — expect a real (possibly empty) JSON response, credential injected:
-"$JETTY" vm exec <vm-name> -- bash -lc 'gh api repos/<org>/<repo>/issues'
+"$JETTY" vm exec <vm-name> -- bash -lc 'env -u GH_TOKEN -u GITHUB_TOKEN gh api repos/<org>/<repo>/issues'
 # unmatched path — expect GitHub's own real anonymous-request response (e.g. 401), NOT a proxy block:
-"$JETTY" vm exec <vm-name> -- bash -lc 'gh api user'
+"$JETTY" vm exec <vm-name> -- bash -lc 'env -u GH_TOKEN -u GITHUB_TOKEN gh api user'
 # git through the Rule (works for any repo it covers):
 "$JETTY" vm exec <vm-name> -- bash -lc 'git ls-remote <repo-url>'
 # push access, if requested — authenticates without pushing anything:
 "$JETTY" vm exec <vm-name> -- bash -lc 'cd ~/<reponame> && git push --dry-run origin HEAD:refs/heads/jetty-push-check'
 ```
 
-`gh auth status` inside the VM doesn't query GitHub at all — it never could
-pass: `/user` isn't covered by any Allow-with-credential Rule, so hitting it
-for real would just forward credential-free by default-Allow and come back
-"not authenticated," which reads like something's broken and sends an agent
-chasing a non-issue for no reason. `gh-rest.py` instead prints "A limited
-number of GitHub operations are authenticated" and exits 0, with no request
-sent. Don't try to make it report a real logged-in identity; that would
-mean a real token had reached the VM.
+Use the repository request as the authentication smoke test. Account-level
+checks such as `gh auth status` can fail because their endpoints fall outside
+the repository Rules.
 
 Confirm unrelated traffic is still unaffected — this check matters more now
 than it used to, since the gateway forces *all* of the VM's 80/443 through

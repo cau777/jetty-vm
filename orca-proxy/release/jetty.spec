@@ -27,7 +27,6 @@ for source, target in (
 
 datas += [
     (str(repo / "VERSION"), "orca_proxy"),
-    (str(repo / "gh-rest" / "gh-rest.py"), "orca_proxy"),
     (str(spec_dir / "THIRD_PARTY_NOTICES.md"), "orca_proxy"),
 ]
 

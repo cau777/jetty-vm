@@ -157,8 +157,7 @@ else
   [ -f "$SOURCE_DIR/VERSION" ] || { echo "Release bundle is malformed." >&2; exit 1; }
   install_source "$SOURCE_DIR"
 fi
-chmod +x "$RELEASE_DIR/gh-rest/gh-rest.py" "$RELEASE_DIR/orca-proxy/deploy/jetty-lxd"
-install -D -m 0755 "$RELEASE_DIR/gh-rest/gh-rest.py" "$JETTY_HOME/gh-rest.py"
+chmod +x "$RELEASE_DIR/orca-proxy/deploy/jetty-lxd"
 install -D -m 0644 \
   "$RELEASE_DIR/orca-proxy/src/orca_proxy/resources/quick-add-catalog.json" \
   "$JETTY_HOME/quick-add-catalog.json"

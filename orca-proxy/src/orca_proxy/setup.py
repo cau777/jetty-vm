@@ -157,15 +157,6 @@ def _install_skill() -> None:
         print("The agent skill could not be installed automatically; install orca-ssh-setup from the Jetty repository.")
 
 
-def _install_gh_helper() -> None:
-    if getattr(sys, "frozen", False):
-        source = Path(getattr(sys, "_MEIPASS")) / "orca_proxy" / "gh-rest.py"
-    else:
-        source = Path(__file__).resolve().parents[3] / "gh-rest" / "gh-rest.py"
-    target = Path.home() / ".local/share/jetty/gh-rest.py"
-    _copy_asset_if_present(source, target, executable=True)
-
-
 def _install_catalog() -> None:
     if getattr(sys, "frozen", False):
         source = Path(getattr(sys, "_MEIPASS")) / "orca_proxy" / "resources" / "quick-add-catalog.json"
@@ -201,7 +192,6 @@ def main(argv: list[str] | None = None) -> int:
         _run_user_service()
         relogin_required = _bootstrap_lxd()
         _install_skill()
-        _install_gh_helper()
         _install_catalog()
     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"Jetty setup failed: {exc}", file=sys.stderr)
