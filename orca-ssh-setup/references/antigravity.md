@@ -53,7 +53,7 @@ installer inside the selected VM:
 Use the VM's actual home directory if it differs. Ensure `~/.local/bin` is
 on the guest PATH for interactive use.
 
-Create VM-scoped Allow-with-credential Rules using the step 6 API pattern,
+Create VM-scoped Allow-with-credential Rules using `jetty rule put --vm <vm-name>`,
 with credential `antigravity-subscription` and bearer injection:
 
 | Hostname | Path prefix | Purpose |

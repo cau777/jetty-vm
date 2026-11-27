@@ -134,71 +134,57 @@ live Credential Value only into requests matching an explicit Rule. It runs once
 VM, not per project).
 
 **3a. Connect to the installed Jetty app.** Jetty installs the `jetty`
-command and starts a per-user daemon. Set its loopback Management API URL:
+command and starts `jettyd` as a per-user daemon listening on `127.0.0.1:7700`:
 
 ```bash
 JETTY="${JETTY_CLI:-$HOME/.local/bin/jetty}"
-JETTY_BASE_URL="${JETTY_MANAGEMENT_URL:-http://127.0.0.1:${ORCA_PROXY_MANAGEMENT_PORT:-8080}}"
-API="${JETTY_BASE_URL%/}/api/v1"
-JETTY_TOOLS_DIR="$HOME/.local/share/jetty"
 "$JETTY" status
-curl -sS "${API%/api/v1}/readyz"
+"$JETTY" --json status
 ```
 
-Use these variables in each shell that runs the remaining commands.
+If a custom daemon address is in use, set `JETTY_ADDR` (e.g. `127.0.0.1:7700`).
 
-The Management API is available before gateway setup. `/readyz` returns 503
-with check details until the proxy listener and its prerequisites are ready;
-this alone does not mean the daemon is missing. Gateway health and tunnel
-handshakes are reported separately by `jetty status`. If a custom daemon port
-is in use, set `JETTY_MANAGEMENT_URL` to that loopback URL for the CLI too.
+`jettyd` is available before gateway setup. `status` reports `state: waiting_for_network`
+until `jetty gateway setup` creates the gateway and brings up `10.201.0.1`; this alone
+does not mean the daemon is missing. Gateway health and gateway agent status are reported
+directly by `jetty status`.
 
 **3b. If the Jetty daemon is missing**, stop and hand the user these
 installation commands. They run as the desktop user:
 
 ```bash
-curl -fL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-x86_64.AppImage \
-  -o "$HOME/Downloads/jetty-x86_64.AppImage"
-chmod +x "$HOME/Downloads/jetty-x86_64.AppImage"
-"$HOME/Downloads/jetty-x86_64.AppImage" setup
+curl -fL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-linux-amd64 \
+  -o "$HOME/Downloads/jetty"
+chmod +x "$HOME/Downloads/jetty"
+"$HOME/Downloads/jetty" setup
 ```
 
-The setup command installs the AppImage under `~/.local/bin/jetty`, starts
-the daemon, installs LXD if needed, and adds the user to the `lxd` group. If
+The setup command installs the static binary under `~/.local/bin/jetty`, starts
+`jetty-daemon.service`, installs LXD if needed, and adds the user to the `lxd` group. If
 it reports that a new login is needed, have the user sign out and back in,
 then resume this skill. If Jetty still cannot access LXD, reboot so the
 lingering user manager receives the new group membership.
 
-**3c. Ensure the needed Credentials exist.** Credential creation is a plain
-`PUT` the Provisioning Agent issues directly — it is not gated behind the
-desktop UI's Quick Add button, which is a human convenience layered on the same
-Management API, not a separate mechanism. Read the source-of-truth catalog
-(the same file Quick Add and the compatibility tests both load) rather than
-hardcoding command strings here:
+**3c. Ensure the needed Credentials exist.** Credential creation uses
+`jetty credential put` directly — it is not gated behind the desktop UI's
+Quick Add button. Read the catalog via `"$JETTY" --json credential catalog`
+rather than hardcoding command strings here:
 
 ```bash
-CATALOG="$JETTY_TOOLS_DIR/quick-add-catalog.json"
-
 put_credential() {
-  local key="$1" entry command ttl existing
-  local credential_list
-  entry=$(jq -c --arg k "$key" '.[] | select(.key == $k)' "$CATALOG")
+  local key="$1" entry command ttl
+  entry=$("$JETTY" --json credential catalog | jq -c --arg k "$key" '.entries[] | select(.key == $k)')
   if [ -z "$entry" ]; then
     echo "Credential template not found: $key" >&2
     return 1
   fi
-  # List first so a missing credential is distinct from an API failure.
-  credential_list=$(curl -fsS "$API/credentials") || return
-  existing=$(printf '%s\n' "$credential_list" | jq -c --arg k "$key" '.credentials[] | select(.name == $k)') || return
-  if [ -n "$existing" ]; then
+  if "$JETTY" --json credential list | jq -e --arg k "$key" '.credentials[] | select(.name == $k)' >/dev/null; then
     echo "Reusing existing Credential: $key"
     return 0
   fi
   command=$(echo "$entry" | jq -r .command)
   ttl=$(echo "$entry" | jq -r .ttl_seconds)
-  curl -fsS -X PUT "$API/credentials/${key}" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg cmd "$command" --argjson ttl "$ttl" '{command: $cmd, ttl_seconds: $ttl}')"
+  "$JETTY" credential put "$key" --command "$command" --ttl "$ttl"
 }
 
 # Only the ones actually needed, per step 2's answers:
@@ -209,15 +195,15 @@ put_credential antigravity-subscription # if Google Antigravity CLI was requeste
 ```
 
 Reuse existing Credentials, including user-customized commands. Every successful
-Credential `PUT`, even with identical settings, invalidates the cached value
+`credential put`, even with identical settings, invalidates the cached value
 and cancels in-flight execution. Update an existing definition only when that
-change is needed and authorized. GET/list expose status, never secret values.
+change is needed and authorized. `credential get`/`list` expose status, never secret values.
 
 The Claude Code and Codex Credentials refresh the host's own logins
 (`~/.claude/.credentials.json`, `~/.codex/auth.json`), and that rotates the
 token. Anything else that refreshes the same login (the user's own `claude`
 or `codex` on the host, or a side-by-side Multipass-era proxy) can revoke the
-access token orca-proxy has cached. orca-proxy drops a cached value as soon
+access token `jettyd` has cached. `jettyd` drops a cached value as soon
 as upstream rejects it with 401, so the next request refetches it; a single
 failed turn right after such a refresh is expected and recovers by itself.
 
@@ -228,7 +214,7 @@ it may already be valid from a previous project's setup on this same host —
 and only ask the user to log in if it isn't:
 
 ```bash
-curl -fsS "$API/credentials/github-host-login" | jq -r .status
+"$JETTY" --json credential get github-host-login | jq -r .status
 # "empty" just means nothing is cached yet; "error" needs the user's login.
 ```
 
@@ -245,7 +231,7 @@ Host logins are shared across projects and VM rebuilds. The user may need to
 log in again if a session expires or is revoked. Credential Values are picked up live on the next
 request; no restart needed after login. If a Credential remains in `error` after a
 successful host login, invalidate it with
-`POST "$API/credentials/<name>/refresh"` and retry the actual request; refresh
+`"$JETTY" credential refresh <name>` and retry the actual request; refresh
 clears the cache without executing the command immediately.
 
 ## 4. Create a properly named LXD VM
@@ -265,14 +251,12 @@ Use it when the gateway is missing or needs repair:
 
 ```bash
 "$JETTY" gateway setup     # creates the LXD project, networks and gateway VM
-curl -fsS "${API%/api/v1}/readyz"
-"$JETTY" status    # expect the gateway service active and a recent handshake
+"$JETTY" status            # expect state: running, gateway_service and gateway_agent active
 ```
 
 Gateway setup takes a few minutes the first time while LXD downloads the
-Ubuntu image and cloud-init installs the gateway tools. The daemon starts the
-proxy listener when the network becomes available. Do not continue unless
-`/readyz` returns `"ready": true` and status shows a recent handshake. Then
+Ubuntu image, cloud-init runs, and the gateway installs `jetty-gw-agent`. Do not
+continue unless `jetty status` reports `state: running` with `gateway_agent: active`. Then
 create the VM with the confirmed name and sizing:
 
 ```bash
@@ -453,12 +437,12 @@ Always complete the project setup and any needed Port Forwards below.
 
 ### Confirm registration
 
-`jetty vm create` already registered the VM. Confirm it, and that the
-proxy is ready:
+`jetty vm create` already registered the VM. Confirm it, and that Jetty
+is ready:
 
 ```bash
-curl -fsS "$API/vms/<vm-name>"
-curl -fsS "${API%/api/v1}/readyz"
+"$JETTY" --json vm list | jq -e '.vms[] | select(.name == "<vm-name>")'
+"$JETTY" --json status | jq -e '.state == "running"'
 ```
 
 `jetty vm create` also installed the Interception CA into the VM's system trust
@@ -469,7 +453,7 @@ decision.
 ### Create Rules for this project
 
 Narrow to exactly what step 2 confirmed. Check
-`curl -fsS "$API/vms/<vm-name>/rules"` for priorities already used by this VM.
+`"$JETTY" rule list --vm <vm-name>` for priorities already used by this VM.
 Names and priorities are unique within a VM or the global scope; other VMs
 may reuse them. Reuse existing matching Rules and preserve their priorities.
 VM Rules run before Global Rules; lower numbers run first within each scope: an
@@ -483,14 +467,10 @@ and any additional policy determine whether writes succeed; a path prefix
 alone does not enforce read-only access. For GitHub:
 
 ```bash
-curl -fsS -X PUT "$API/vms/<vm-name>/rules/github-api" \
-  -H 'Content-Type: application/json' -d '{
-    "priority": <next available for this VM>,
-    "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
-    "hostname": "api.github.com",
-    "action": {"type": "allow_with_credential", "credential": "github-host-login",
-               "path_prefix": "/repos/<org>/<repo>", "injection": {"type": "bearer"}}
-  }'
+"$JETTY" rule put github-api --vm <vm-name> \
+  --priority <next-priority> --hostname api.github.com \
+  --action allow_with_credential --credential github-host-login \
+  --path-prefix "/repos/<org>/<repo>" --injection bearer
 # for authenticated clone/fetch/pull as well as authorized push — path_prefix MUST exactly match the
 # request path git's smart-HTTP client actually sends, which is whatever
 # the repo's own `origin` remote says verbatim (git does NOT normalize a
@@ -507,28 +487,20 @@ curl -fsS -X PUT "$API/vms/<vm-name>/rules/github-api" \
 # to default-Allow passthrough with no credential injected, so it reaches
 # GitHub for real and gets a real "Invalid username or token" back, not an
 # obvious proxy-side error):
-curl -fsS -X PUT "$API/vms/<vm-name>/rules/github-git" \
-  -H 'Content-Type: application/json' -d '{
-    "priority": <next available for this VM>,
-    "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
-    "hostname": "github.com",
-    "action": {"type": "allow_with_credential", "credential": "github-host-login",
-               "path_prefix": "/<org>/<repo>.git", "injection": {"type": "basic", "username": "x-access-token"}}
-  }'
+"$JETTY" rule put github-git --vm <vm-name> \
+  --priority <next-priority> --hostname github.com \
+  --action allow_with_credential --credential github-host-login \
+  --path-prefix "/<org>/<repo>.git" --injection basic --username x-access-token
 ```
 
 For Claude Code (only if requested) — the real inference host, confirmed
 from the shipped CLI itself, not a broker:
 
 ```bash
-curl -fsS -X PUT "$API/vms/<vm-name>/rules/claude" \
-  -H 'Content-Type: application/json' -d '{
-    "priority": <next available for this VM>,
-    "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
-    "hostname": "api.anthropic.com",
-    "action": {"type": "allow_with_credential", "credential": "claude-code-subscription",
-               "path_prefix": "/", "injection": {"type": "bearer"}}
-  }'
+"$JETTY" rule put claude --vm <vm-name> \
+  --priority <next-priority> --hostname api.anthropic.com \
+  --action allow_with_credential --credential claude-code-subscription \
+  --path-prefix / --injection bearer
 ```
 
 For Codex (only if requested) — `chatgpt.com`, not `api.openai.com`: the
@@ -536,14 +508,10 @@ For Codex (only if requested) — `chatgpt.com`, not `api.openai.com`: the
 tokens, which is a different inference host than API-key mode:
 
 ```bash
-curl -fsS -X PUT "$API/vms/<vm-name>/rules/codex" \
-  -H 'Content-Type: application/json' -d '{
-    "priority": <next available for this VM>,
-    "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
-    "hostname": "chatgpt.com",
-    "action": {"type": "allow_with_credential", "credential": "codex-subscription",
-               "path_prefix": "/", "injection": {"type": "bearer"}}
-  }'
+"$JETTY" rule put codex --vm <vm-name> \
+  --priority <next-priority> --hostname chatgpt.com \
+  --action allow_with_credential --credential codex-subscription \
+  --path-prefix / --injection bearer
 ```
 
 For Google Antigravity CLI, read [references/antigravity.md](references/antigravity.md)
@@ -635,8 +603,8 @@ first real turn:
 (`codex exec` refuses to run outside a git repository unless given
 `--skip-git-repo-check`, so use that flag for this repository-independent smoke check.)
 
-If either fails, check `curl "${API%/api/v1}/readyz"` and that
-Credential's live status on the host first (see also step 8) — a down service or an invalid
+If either fails, check `"$JETTY" status` and that
+Credential's live status (`"$JETTY" credential get <name>`) on the host first (see also step 8) — a down service or an invalid
 Credential fails every harness identically, and shouldn't be mistaken for a
 VM-side problem.
 
@@ -870,22 +838,21 @@ either is down, every Jetty VM loses outbound 80/443 connectivity entirely
 
 ## 8. Troubleshooting
 
-Check these before changing anything. Set the `JETTY`, `API` and
-`JETTY_TOOLS_DIR` variables from step 3a first.
+Check these before changing anything. Set `JETTY="${JETTY_CLI:-$HOME/.local/bin/jetty}"` from step 3a first.
 
 | Symptom | Cause and fix |
 | --- | --- |
-| A harness gets `401` once, then works | A host-side refresh revoked the cached token (see 3c); orca-proxy refetched it. Nothing to do. |
-| A harness keeps getting `401` | The host login itself is broken. Check `curl "$API/credentials/<name>"`; if `error`, the user logs in again on the host. |
-| The proxy is waiting for its network | Run `"$JETTY" gateway setup`, then wait for `/readyz` to become ready. |
+| A harness gets `401` once, then works | A host-side refresh revoked the cached token (see 3c); `jettyd` refetched it. Nothing to do. |
+| A harness keeps getting `401` | The host login itself is broken. Check `"$JETTY" credential get <name>`; if `error`, the user logs in again on the host. |
+| The proxy is waiting for its network | Run `"$JETTY" gateway setup`, then wait for `"$JETTY" status` to report `state: running`. |
 | `ssh <vm-name>` says "host key verification failed" | The VM was re-launched under the same name. `ssh-keygen -R <vm-name>`, then accept the new key. |
 | `ssh <vm-name>` times out | `"$JETTY" status`; the gateway must be running with `jetty-gateway.service` active. `"$JETTY" gateway setup` reapplies its config. |
-| The VM has no web access at all | Fail-closed by design when the proxy, the tunnel or the gateway is down. Check `/readyz`, then `"$JETTY" status`. |
+| The VM has no web access at all | Fail-closed by design when `jettyd`, `jetty-gw-agent`, or the gateway is down. Check `"$JETTY" status`. |
 | The VM can't reach a LAN, VPN or host address | By design: Jetty VMs can't reach private addresses, IPv6 or other Jetty VMs. |
 | Orca says "That SSH host is already in Orca" | It keys hosts on address, and every VM shares the gateway's `10.201.0.2`. Add the VM by its own address with the gateway as Jump Host (step 7). |
 | Orca says "System SSH probe failed ... Host key verification failed" | The VM's key isn't trusted under its IP. Add it with `ssh-keyscan` as in step 5. |
 | `gh api user` returns 401 | Expected: no Rule covers `/user`. |
-| A request from the VM is refused with no rule match | Its source isn't registered. `curl "$API/vms"` should list the VM with the address `"$JETTY" vm ip <vm-name>` prints. |
+| A request from the VM is refused with no rule match | Its source isn't registered. `"$JETTY" vm list` should list the VM with the address `"$JETTY" vm ip <vm-name>` prints. |
 
 The host may have `br_netfilter` loaded (Docker loads it), which makes the
 host's own netfilter rules see traffic crossing the Jetty bridges. The
@@ -895,11 +862,10 @@ some new path through the gateway mysteriously loses its replies.
 ### Removing a VM, or everything
 
 ```bash
-# Inspect Rules first; the proxy refuses to unregister a referenced VM:
-curl -fsS "$API/vms/<vm-name>/rules" | jq -r '.rules[].name'
-# Delete the Rules owned by this VM. Global Rules are managed separately.
+# Inspect Rules first; delete the Rules owned by this VM. Global Rules are managed separately.
+"$JETTY" --json rule list --vm <vm-name> | jq -r '.rules[].name'
 # Close this VM's Port Forwards and Reverse Forwards before deletion.
-curl -fsS -X DELETE "$API/vms/<vm-name>/rules/<rule-name>"
+"$JETTY" rule delete <rule-name> --vm <vm-name>
 "$JETTY" vm delete <vm-name>                          # deletes the VM and unregisters it
 ```
 

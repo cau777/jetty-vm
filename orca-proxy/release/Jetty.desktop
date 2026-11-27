@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Jetty
-Comment=Manage Jetty virtual machines
-Exec=AppRun tray
-Icon=jetty
-Terminal=false
-Categories=Development;Utility;

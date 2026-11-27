@@ -1,0 +1,92 @@
+:root {
+  --bg: #171613;
+  --panel: #1c1a17;
+  --card: #22201c;
+  --border: #3b362c;
+  --text: #f1ece3;
+  --muted: #afa698;
+  --accent: #dfba80;
+  --blue: #96bce8;
+  --green: #9bc6a4;
+  --red: #ff7b7b;
+}
+* { box-sizing: border-box; }
+html, body, #app {
+  margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font-family: Inter, system-ui, -apple-system, sans-serif; font-size: 13px;
+}
+.shell { display: flex; flex-direction: column; height: 100%; }
+.topbar {
+  height: 52px; display: flex; align-items: center; gap: 14px; padding: 0 20px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.brand { font-weight: 700; letter-spacing: 0.14em; font-size: 14px; }
+.spacer { flex: 1; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border-radius: 999px; background: var(--card); border: 1px solid var(--border);
+  font-size: 11px; color: var(--muted);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.dot.ok { background: var(--green); }
+.dot.err { background: var(--red); }
+.main { display: flex; flex: 1; min-height: 0; }
+.sidebar {
+  width: 240px; background: var(--panel); border-right: 1px solid var(--border);
+  padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto;
+}
+.nav-label { font-size: 10px; font-weight: 700; color: #766f62; letter-spacing: 1.2px; padding: 6px 9px 2px; }
+.nav-btn {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; border: 0; background: transparent; color: var(--text);
+  padding: 8px 10px; border-radius: 7px; cursor: pointer; text-align: left;
+}
+.nav-btn:hover { background: #29251f; }
+.nav-btn.active { background: #3a3022; color: var(--accent); }
+.btn {
+  background: var(--card); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 11px; cursor: pointer; font-size: 12px;
+}
+.btn.primary { background: #3a3022; border-color: #6b5636; color: var(--accent); }
+.btn.danger { border-color: #6d3232; color: var(--red); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.content { flex: 1; display: flex; min-width: 0; overflow: hidden; }
+.pane { flex: 1; padding: 18px 22px; overflow-y: auto; min-width: 0; }
+.inspector {
+  width: 420px; border-left: 1px solid var(--border); background: var(--panel);
+  padding: 16px; overflow-y: auto;
+}
+.header-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+h2 { margin: 0; font-size: 16px; font-weight: 600; }
+h3 { margin: 14px 0 8px; font-size: 13px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #2b2720; vertical-align: top; }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+tr.clickable:hover { background: #23201b; cursor: pointer; }
+tr.selected { background: #2d271e; }
+.tag {
+  display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px;
+  background: #2b2720; color: var(--muted);
+}
+.tag.allow { color: var(--green); }
+.tag.block { color: var(--red); }
+.tag.intercept { color: var(--blue); }
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px;
+}
+.form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.form-row label { font-size: 11px; color: var(--muted); }
+input, select, textarea {
+  background: #141310; color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 9px; font-family: inherit; font-size: 12px;
+}
+textarea { font-family: ui-monospace, monospace; min-height: 84px; }
+.filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+pre {
+  background: #12110f; border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; overflow-x: auto; font-size: 11px; color: var(--muted);
+}
+.error-banner {
+  background: #351d1d; border: 1px solid #753737; color: #ffb4b4;
+  padding: 8px 12px; border-radius: 6px; margin-bottom: 12px;
+}

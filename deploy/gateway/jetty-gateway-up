@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Runs INSIDE the Jetty gateway VM as root, at every boot (jetty-gateway.service),
+# installed there by jettyd (`jetty gateway setup`). All netfilter state lives in
+# this VM's kernel, never the host's.
+#
+#   agent tcp/80,443 to public addresses -> local mitmproxy :8080 (transparent)
+#   agent tcp/80,443 anywhere else       -> dropped
+#   agent traffic to private ranges      -> dropped
+#   other agent traffic                  -> NAT out the uplink
+#   host -> uplink tcp/(SSH_PORT_BASE+N) -> agent 10.202.0.N:22 (host SSH, one hop)
+#
+# ip_forward stays 0 (the kernel default) until everything else is in place,
+# so a failure anywhere here leaves agents with no egress at all.
+set -euo pipefail
+
+# shellcheck source=/dev/null
+. /etc/jetty-gateway/env   # UP_MAC PRIV_MAC PRIV_ADDR HOST_ADDR SSH_PORT_BASE PROXY_PORT
+
+PROXY_PORT="${PROXY_PORT:-8080}"
+
+sysctl -qw net.ipv4.ip_forward=0
+ifname() { for d in /sys/class/net/*; do [ "$(cat "$d/address")" = "$1" ] && basename "$d"; done; true; }
+UP=$(ifname "$UP_MAC"); PRIV=$(ifname "$PRIV_MAC")
+[ -n "$UP" ] && [ -n "$PRIV" ] || { echo "gateway NICs not found (uplink=$UP private=$PRIV)" >&2; exit 1; }
+
+sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0
+ip addr replace "$PRIV_ADDR" dev "$PRIV"; ip link set "$PRIV" up
+
+PRIVATE=(10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 127.0.0.0/8 0.0.0.0/8 224.0.0.0/4 240.0.0.0/4)
+
+iptables -t mangle -F; iptables -t mangle -X; iptables -t nat -F; iptables -F; iptables -X
+
+# Agent web traffic to public addresses -> local transparent mitmproxy.
+# Private addresses return unchanged so FORWARD drops them below.
+iptables -t nat -N JETTY_WEB
+for net in "${PRIVATE[@]}"; do iptables -t nat -A JETTY_WEB -d "$net" -j RETURN; done
+iptables -t nat -A JETTY_WEB -p tcp -j REDIRECT --to-ports "$PROXY_PORT"
+iptables -t nat -A PREROUTING -i "$PRIV" -p tcp -m multiport --dports 80,443 -j JETTY_WEB
+
+iptables -P FORWARD DROP
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i "$PRIV" -p tcp -m multiport --dports 80,443 -j DROP   # never direct
+for net in "${PRIVATE[@]}"; do iptables -A FORWARD -i "$PRIV" -d "$net" -j DROP; done
+iptables -A FORWARD -i "$PRIV" -o "$UP" -j ACCEPT   # non-web egress: unchanged semantics
+
+# Host SSH to agents: only the host's own uplink address, only to port 22.
+# Static for the whole agent range, so launching a VM never touches this.
+PRIV_NET_PREFIX=${PRIV_ADDR%.*}
+for n in $(seq 11 250); do
+  iptables -t nat -A PREROUTING -i "$UP" -s "$HOST_ADDR" -p tcp --dport $((SSH_PORT_BASE + n)) \
+    -j DNAT --to-destination "$PRIV_NET_PREFIX.$n:22"
+done
+iptables -A FORWARD -i "$UP" -o "$PRIV" -s "$HOST_ADDR" -p tcp --dport 22 -m conntrack --ctstate DNAT -j ACCEPT
+# ...arriving from the gateway's own private address. With the host's address
+# as source, hosts with br_netfilter loaded (Docker does) run LXD's uplink
+# masquerade over the bridged frame, so the agent answers the host's LAN IP.
+iptables -t nat -A POSTROUTING -o "$PRIV" -p tcp --dport 22 -m conntrack --ctstate DNAT -j SNAT --to-source "${PRIV_ADDR%/*}"
+iptables -t nat -A POSTROUTING -o "$UP" -j MASQUERADE
+
+# Redirected web packets go through INPUT. Accept only connections that the
+# REDIRECT rule produced, before the final DROP, so agents cannot open :8080 directly.
+iptables -A INPUT -i "$PRIV" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i "$PRIV" -p tcp --dport "$PROXY_PORT" -m conntrack --ctstate DNAT -j ACCEPT
+iptables -A INPUT -i "$PRIV" -p icmp -j ACCEPT
+iptables -A INPUT -i "$PRIV" -j DROP
+
+ip6tables -P FORWARD DROP
+sysctl -qw net.ipv4.ip_forward=1
+echo "jetty gateway up (uplink=$UP private=$PRIV proxy_port=$PROXY_PORT)"
