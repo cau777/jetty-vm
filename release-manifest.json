@@ -1,5 +1,7 @@
 {
-  "version": "v2.14.1",
+  "version": "v1.0.0-preview1",
   "skill": "orca-ssh-setup",
-  "proxy": "orca-proxy"
+  "daemon": "cmd/jetty",
+  "gateway_agent": "gateway-agent",
+  "desktop": "desktop"
 }
