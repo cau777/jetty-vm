@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,16 +21,17 @@ import (
 	jettyv1 "github.com/cau777/jetty-vm/gen/go/jetty/v1"
 	"github.com/cau777/jetty-vm/gen/go/jetty/v1/jettyv1connect"
 	"github.com/cau777/jetty-vm/internal/config"
+	"github.com/cau777/jetty-vm/internal/validation"
 )
 
 // App exposes Jetty daemon RPCs to the Wails TypeScript frontend over a single ConnectRPC client.
 type App struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	client     jettyv1connect.JettyClient
-	emitEvent  func(name string, data any)
-	watchMu    sync.Mutex
-	addr       string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	client    jettyv1connect.JettyClient
+	emitEvent func(name string, data any)
+	watchMu   sync.Mutex
+	addr      string
 }
 
 // NewApp constructs a Wails App targeting addr (defaults to config.ClientAddr()).
@@ -213,6 +217,36 @@ func (a *App) HandoffVm(name, agent string) (any, error) {
 	return protoToAny(resp.Msg)
 }
 
+// OpenFiles asks the desktop file manager to open the VM's SFTP location.
+func (a *App) OpenFiles(name string) error {
+	if _, err := validation.ValidateName(name, "name"); err != nil {
+		return err
+	}
+	location := "sftp://" + name + "/home/ubuntu"
+	ctx, cancel := context.WithTimeout(a.reqCtx(), 10*time.Second)
+	defer cancel()
+	err := exec.CommandContext(ctx, "gdbus", "call", "--session",
+		"--dest", "org.freedesktop.FileManager1",
+		"--object-path", "/org/freedesktop/FileManager1",
+		"--method", "org.freedesktop.FileManager1.ShowFolders",
+		fmt.Sprintf("['%s']", location), "").Run()
+	if err == nil {
+		return nil
+	}
+	if err := exec.CommandContext(a.reqCtx(), "xdg-open", location).Run(); err != nil {
+		return fmt.Errorf("could not open %s in the file manager: %w", location, err)
+	}
+	return nil
+}
+
+func (a *App) OpenPortUrl(hostPort int) error {
+	if hostPort < 1 || hostPort > 65535 {
+		return fmt.Errorf("invalid host port")
+	}
+	runtime.BrowserOpenURL(a.reqCtx(), fmt.Sprintf("http://localhost:%d", hostPort))
+	return nil
+}
+
 func (a *App) ListPorts(vmName string) (any, error) {
 	resp, err := a.client.ListPorts(a.reqCtx(), connect.NewRequest(&jettyv1.ListPortsRequest{VmName: vmName}))
 	if err != nil {
@@ -229,6 +263,13 @@ func (a *App) OpenPort(vmName string, vmPort, hostPort int, persistent bool) (an
 		return nil, err
 	}
 	return protoToAny(resp.Msg)
+}
+
+func (a *App) UpdatePort(vmName string, hostPort int, persistent bool) error {
+	_, err := a.client.UpdatePort(a.reqCtx(), connect.NewRequest(&jettyv1.UpdatePortRequest{
+		VmName: vmName, HostPort: int32(hostPort), Persistent: persistent,
+	}))
+	return err
 }
 
 func (a *App) ClosePort(vmName string, hostPort int) error {
@@ -254,6 +295,13 @@ func (a *App) OpenReversePort(vmName string, hostPort, vmPort int, persistent bo
 	return protoToAny(resp.Msg)
 }
 
+func (a *App) UpdateReversePort(vmName string, vmPort int, persistent bool) error {
+	_, err := a.client.UpdateReversePort(a.reqCtx(), connect.NewRequest(&jettyv1.UpdateReversePortRequest{
+		VmName: vmName, VmPort: int32(vmPort), Persistent: persistent,
+	}))
+	return err
+}
+
 func (a *App) CloseReversePort(vmName string, vmPort int) error {
 	_, err := a.client.CloseReversePort(a.reqCtx(), connect.NewRequest(&jettyv1.CloseReversePortRequest{VmName: vmName, VmPort: int32(vmPort)}))
 	return err
@@ -268,18 +316,18 @@ func (a *App) ListRules(vmName string, globalOnly bool) (any, error) {
 }
 
 type RuleInput struct {
-	Name       string   `json:"name"`
-	Priority   int32    `json:"priority"`
-	Scope      string   `json:"scope"`
-	Hostname   string   `json:"hostname"`
-	ActionType string   `json:"action_type"`
-	Credential string   `json:"credential"`
-	PathPrefix string   `json:"path_prefix"`
-	InjType    string   `json:"injection_type"`
-	Username   string   `json:"username"`
-	HeaderName string   `json:"header_name"`
-	Service    string   `json:"service"`
-	Region     string   `json:"region"`
+	Name       string `json:"name"`
+	Priority   int32  `json:"priority"`
+	Scope      string `json:"scope"`
+	Hostname   string `json:"hostname"`
+	ActionType string `json:"action_type"`
+	Credential string `json:"credential"`
+	PathPrefix string `json:"path_prefix"`
+	InjType    string `json:"injection_type"`
+	Username   string `json:"username"`
+	HeaderName string `json:"header_name"`
+	Service    string `json:"service"`
+	Region     string `json:"region"`
 }
 
 func (a *App) PutRule(in RuleInput) (any, error) {
@@ -376,7 +424,11 @@ func (a *App) ListRequests(vmName, decision, host string, limit int) (any, error
 	return protoToAny(resp.Msg)
 }
 
-func (a *App) GetRequest(id int64) (any, error) {
+func (a *App) GetRequest(key string) (any, error) {
+	id, err := strconv.ParseInt(key, 10, 64)
+	if err != nil || id < 1 {
+		return nil, fmt.Errorf("invalid connection ID")
+	}
 	resp, err := a.client.GetRequest(a.reqCtx(), connect.NewRequest(&jettyv1.GetRequestRequest{Id: id}))
 	if err != nil {
 		return nil, err

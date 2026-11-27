@@ -74,6 +74,24 @@ func TestDesktopAppWatchAndCRUD(t *testing.T) {
 		t.Fatalf("GetCa failed: %v", err)
 	}
 
+	// The desktop receives protobuf int64 IDs as JSON strings. A JS number
+	// would round this connection ID before the inspector sent it back.
+	const connectionID = "9007199254740993"
+	if _, err := reqConn.Exec(`INSERT INTO connections
+		(id, started_at, vm_name, destination_ip, destination_port, sni_present, ech_present, intercepted)
+		VALUES (?, ?, 'test-vm', '192.0.2.1', 443, 0, 0, 0)`,
+		connectionID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := app.GetRequest(connectionID)
+	if err != nil {
+		t.Fatalf("GetRequest failed: %v", err)
+	}
+	connection := detail.(map[string]any)["connection"].(map[string]any)
+	if connection["id"] != connectionID {
+		t.Fatalf("connection ID = %v, want %s", connection["id"], connectionID)
+	}
+
 	select {
 	case ev := <-eventsCh:
 		if ev == "" {

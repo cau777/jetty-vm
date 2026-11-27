@@ -17,8 +17,8 @@ func main() {
 	err := wails.Run(&options.App{
 		Title:     "Jetty",
 		Width:     1380,
-		Height:    840,
-		MinWidth:  1080,
+		Height:    820,
+		MinWidth:  1100,
 		MinHeight: 620,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
