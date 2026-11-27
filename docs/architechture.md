@@ -117,15 +117,31 @@ jetty log list [--vm NAME] [--decision ...] [--follow]
 jetty log show ID
 ```
 
-If `jettyd` is written in Go, the CLI and the daemon can be one static binary
-(`jetty daemon` starts the server). That replaces the AppImage and the Python
-runtime on the host.
+The CLI and the daemon are one static Go binary (`jetty daemon` starts the
+server). That replaces the AppImage and the Python runtime on the host.
 
-### Desktop client
+### Desktop client (`jetty-desktop`)
 
-A separate app that uses the same API. It subscribes to a `Watch` stream
-instead of polling. There is no tray. Closing the window quits the app, and
-egress keeps working because egress never depended on the UI.
+A [Wails](https://wails.io) app: a Go backend with a TypeScript web frontend,
+rendered in the system webview (WebKitGTK on Linux).
+
+- The Go side imports the same generated `connect-go` client as the CLI and
+  calls `jettyd` on `127.0.0.1:7700`. The frontend calls only the Go
+  functions Wails binds for it, so there is one protocol client in the
+  codebase.
+- `Watch` and job event streams are relayed to the frontend as Wails events,
+  replacing today's polling of about 10 endpoints.
+- The dense screens (log inspector, rule editor drawer, VM dashboard) are
+  ordinary web UI. None of the QML carries over.
+- It is a separate binary from `jetty`, because Wails needs cgo and WebKitGTK
+  and would break the static CLI-and-daemon build. It ships as its own
+  package.
+- Ubuntu 24.04 ships `webkit2gtk-4.1`, which Wails v2 uses through a build
+  tag (`webkit2_41`, to confirm). Check whether Wails v3 is stable before
+  starting.
+
+There is no tray. Closing the window quits the app, and egress keeps working
+because egress never depended on the UI.
 
 ### Gateway agent (`jetty-gw-agent`)
 
@@ -166,8 +182,9 @@ the original destination, which the redirect limits to public addresses.
 
 I recommend gRPC with protobuf, served through ConnectRPC. A Connect server
 speaks gRPC, gRPC-Web and a JSON-over-HTTP variant from the same handlers.
-That leaves the desktop free to be a web-tech app, and `curl` still works for
-debugging, without keeping a hand-written HTTP API.
+The CLI, the desktop's Go side and `jettyd` all use the generated
+`connect-go` code, and `curl` still works for debugging, without keeping a
+hand-written HTTP API.
 
 One service, grouped by concern. The gateway's calls are ordinary RPCs on it:
 
@@ -242,6 +259,11 @@ Everything is plain TCP on port 7700, with no auth and no TLS:
   sees agent source IPs directly on `jettypriv0`. That removes `tunnel.py`,
   the key file, the log-line filter, MSS clamping and the policy-routing
   table.
+- **Host check.** `jettyd` rejects requests whose `Host` header is not
+  `127.0.0.1:7700` or `10.201.0.1:7700`, and sends no CORS headers. Without
+  this, a web page in the user's browser could reach the unauthenticated
+  loopback API through DNS rebinding. Today's aiohttp API has the same
+  exposure.
 
 ## What stays the same
 
@@ -292,25 +314,34 @@ the protocol is stable.
 3. **Add the rest of the service** next to the HTTP API. Move the CLI over,
    then move the skill from `curl` to the CLI.
 4. **Remove the HTTP API and the tray.**
-5. **Rewrite `jettyd` in the chosen language** against the same proto. Use
-   the Python test suite (rule engine, validation, redaction, credential
-   cache) as golden cases, and add contract tests that run against both
+5. **Rewrite `jettyd` and the CLI in Go** against the same proto. Use the
+   Python test suite (rule engine, validation, redaction, credential cache)
+   as golden cases, and add contract tests that run against both
    implementations.
-6. **Rewrite the desktop client.**
+6. **Rewrite the desktop client in Wails.** Until then, the QML desktop can
+   keep working against the new API through a generated Python client.
 
 After step 4, every part talks only through the proto, so steps 5 and 6 can be
 done in any order, or never.
 
+## Decisions
+
+1. **`jettyd` and the CLI are Go.** LXD's official client is Go
+   (`canonical/lxd/client`, including exec and file streaming),
+   `connect-go` is first-party, the CLI and daemon fit in one static binary,
+   and the standard library covers the CA. Rust was considered: it works, but
+   it needs a hand-written LXD client, and its Connect support is less
+   established. Its main advantage, sharing a backend with a Tauri desktop,
+   doesn't apply here.
+2. **The desktop is Wails.** It shares the Go client with the CLI and uses web
+   UI for the dense screens. Fyne and Gio were considered: they are pure Go
+   and static, but rich tables and editors take much more work in them.
+   Tauri would add Rust as a second backend language.
+
 ## Open decisions
 
-1. **Language for `jettyd`.** I recommend Go. LXD's own client is Go
-   (`canonical/lxd/client`), gRPC/Connect support is mature, CLI and daemon fit
-   in one static binary, and Go's crypto library covers the CA. Rust also works
-   but needs more code for LXD.
-2. **Desktop toolkit.** Tauri (TS over Connect-Web) or a Go-native toolkit.
-   This depends on how much of the current QML is worth keeping.
-3. **Gateway agent upgrades.** `jettyd` pushes the agent at `SetupGateway` and
+1. **Gateway agent upgrades.** `jettyd` pushes the agent at `SetupGateway` and
    refuses `Hello` on a version mismatch. Should a mismatch trigger an
    automatic re-push, or require `jetty gateway setup`?
-4. **mitmproxy in the gateway.** Install it from pinned wheels at gateway setup
+2. **mitmproxy in the gateway.** Install it from pinned wheels at gateway setup
    (needs gateway egress at setup time) or bake it into a Jetty gateway image.
