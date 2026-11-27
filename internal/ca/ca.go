@@ -4,6 +4,7 @@ package ca
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -79,11 +80,10 @@ func generate() (certPEM, keyPEM, fingerprint string, notBefore, notAfter time.T
 	if err != nil {
 		return "", "", "", time.Time{}, time.Time{}, err
 	}
-	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		return "", "", "", time.Time{}, time.Time{}, err
-	}
-	ski := sha256.Sum256(pubDER)
+	// RFC 5280 §4.2.1.2 method 1: 20-byte SHA-1 of subjectPublicKey BIT STRING,
+	// matching mitmproxy's AuthorityKeyIdentifier on leaf certificates.
+	pkcs1 := x509.MarshalPKCS1PublicKey(&key.PublicKey)
+	ski := sha1.Sum(pkcs1)
 
 	notBefore = time.Now().UTC()
 	notAfter = notBefore.AddDate(ValidityYears, 0, 0)

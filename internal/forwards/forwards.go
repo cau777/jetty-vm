@@ -100,7 +100,8 @@ type sshTunnel struct {
 	lines       []string
 	remoteReady chan struct{}
 	readyOnce   sync.Once
-	waitDone    chan error
+	waitDone    chan struct{}
+	waitErr     error
 	drainDone   chan struct{}
 }
 
@@ -148,9 +149,9 @@ func (t *sshTunnel) LastError() string {
 }
 
 func (t *sshTunnel) Wait() error {
-	err := <-t.waitDone
+	<-t.waitDone
 	<-t.drainDone
-	return err
+	return t.waitErr
 }
 
 func (t *sshTunnel) Stop() error {
@@ -240,12 +241,13 @@ func NewSSHConnector(prepare Preparer, dir string) Connector {
 		tun := &sshTunnel{
 			cmd:         cmd,
 			remoteReady: make(chan struct{}),
-			waitDone:    make(chan error, 1),
+			waitDone:    make(chan struct{}),
 			drainDone:   make(chan struct{}),
 		}
 		go tun.readStderr(bufio.NewReader(stderrPipe))
 		go func() {
-			tun.waitDone <- cmd.Wait()
+			tun.waitErr = cmd.Wait()
+			close(tun.waitDone)
 		}()
 
 		readyCtx, cancel := context.WithTimeout(ctx, ReadyTimeout)
@@ -263,12 +265,12 @@ func waitTunnelReady(ctx context.Context, tun *sshTunnel, fwd *Forward) error {
 		select {
 		case <-tun.remoteReady:
 			return nil
-		case err := <-tun.waitDone:
+		case <-tun.waitDone:
 			<-tun.drainDone
 			if msg := tun.LastError(); msg != "" {
 				return errors.New(msg)
 			}
-			return fmt.Errorf("SSH exited: %v", err)
+			return fmt.Errorf("SSH exited: %v", tun.waitErr)
 		case <-ctx.Done():
 			return errors.New("SSH did not open the VM port in time")
 		}
@@ -278,12 +280,12 @@ func waitTunnelReady(ctx context.Context, tun *sshTunnel, fwd *Forward) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", fwd.HostPort)
 	for {
 		select {
-		case err := <-tun.waitDone:
+		case <-tun.waitDone:
 			<-tun.drainDone
 			if msg := tun.LastError(); msg != "" {
 				return errors.New(msg)
 			}
-			return fmt.Errorf("SSH exited: %v", err)
+			return fmt.Errorf("SSH exited: %v", tun.waitErr)
 		case <-ctx.Done():
 			return errors.New("SSH did not open the host port in time")
 		case <-ticker.C:

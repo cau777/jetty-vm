@@ -15,6 +15,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 JETTY=${JETTY_CLI:-jetty}
 LXC="lxc --project ${JETTY_LXD_PROJECT:-jetty}"
 PORT=${JETTY_LISTEN_PORT:-7700}
+SDB=${ORCA_PROXY_HOME:-$HOME/.orca-proxy}/state.sqlite
 RDB=${ORCA_PROXY_HOME:-$HOME/.orca-proxy}/requests.sqlite
 A=test-a B=test-b
 B_IP=$("$JETTY" vm ip "$B")
@@ -74,7 +75,7 @@ expect "gateway call without bearer token is rejected" \
   "$($LXC exec jetty-gw -- curl -sS -o /dev/null -w "%{http_code}" -m 5 -X POST -H 'Content-Type: application/json' -d '{}' "http://10.201.0.1:$PORT/jetty.v1.Jetty/GetStatus" 2>&1 || true)" '^401$'
 
 echo "--- unregistered source"
-"$JETTY" vm delete "$B" >/dev/null 2>&1 || true
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("delete from vms where name=?", (sys.argv[2],)); c.commit()' "$SDB" "$B"
 m=$(mark)
 expect "unregistered b: HTTPS refused" "$(ag "$B" 'curl -sS -m 10 -o /dev/null https://example.com; echo rc=$?')" 'rc=(35|52|56)'
 expect "unregistered b: logged as block_unknown_vm" "$(since "$m")" 'block_unknown_vm'

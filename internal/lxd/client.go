@@ -41,11 +41,8 @@ func SocketPath() string {
 		return filepath.Join(d, "unix.socket")
 	}
 	snap := "/var/snap/lxd/common/lxd/unix.socket"
-	if info, err := os.Stat(snap); err == nil && (info.Mode()&os.ModeSocket) != 0 {
-		if f, err := os.OpenFile(snap, os.O_RDWR, 0); err == nil {
-			f.Close()
-			return snap
-		}
+	if SocketAccessible(snap) {
+		return snap
 	}
 	return "/var/lib/lxd/unix.socket"
 }
@@ -286,7 +283,7 @@ func (c *unixClient) PutFile(ctx context.Context, instance, guestPath string, co
 		"Content-Type": "application/octet-stream",
 		"X-LXD-uid":    fmt.Sprintf("%d", uid),
 		"X-LXD-gid":    fmt.Sprintf("%d", gid),
-		"X-LXD-mode":   fmt.Sprintf("%o", mode),
+		"X-LXD-mode":   fmt.Sprintf("%04o", mode),
 	})
 	return err
 }

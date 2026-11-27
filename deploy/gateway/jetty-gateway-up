@@ -28,7 +28,7 @@ ip addr replace "$PRIV_ADDR" dev "$PRIV"; ip link set "$PRIV" up
 
 PRIVATE=(10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 127.0.0.0/8 0.0.0.0/8 224.0.0.0/4 240.0.0.0/4)
 
-iptables -t mangle -F; iptables -t mangle -X; iptables -t nat -F; iptables -F; iptables -X
+iptables -t mangle -F; iptables -t mangle -X; iptables -t nat -F; iptables -t nat -X; iptables -F; iptables -X
 
 # Agent web traffic to public addresses -> local transparent mitmproxy.
 # Private addresses return unchanged so FORWARD drops them below.

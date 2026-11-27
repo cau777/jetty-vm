@@ -35,8 +35,8 @@ func TestEnsureGeneratedAndMaterialize(t *testing.T) {
 		t.Fatal("invalid cert PEM")
 	}
 	cert, err := x509.ParseCertificate(blk.Bytes)
-	if err != nil || !cert.IsCA || len(cert.SubjectKeyId) == 0 {
-		t.Fatalf("invalid CA cert: %v", err)
+	if err != nil || !cert.IsCA || len(cert.SubjectKeyId) != 20 {
+		t.Fatalf("invalid CA cert (ski len=%d): %v", len(cert.SubjectKeyId), err)
 	}
 	outPath := filepath.Join(dir, "mitmproxy-ca.pem")
 	if err := Materialize(row1, outPath); err != nil {

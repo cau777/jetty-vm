@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -456,11 +457,12 @@ func cmdVM(ctx context.Context, client jettyv1connect.JettyClient, args []string
 			return 1, err
 		}
 		_ = stream.CloseRequest()
+		defer stream.CloseResponse()
 		exitCode := 0
 		for {
 			msg, err := stream.Receive()
 			if err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					break
 				}
 				return 1, err
