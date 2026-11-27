@@ -724,6 +724,15 @@ Verify the stored token with
 inside the VM. Unset both environment variables for the API smoke tests so
 they exercise the stored config even on a VM with a legacy environment placeholder.
 
+**Required for GitHub access:** Disable `gh` prompts in the VM user's global
+configuration. Interactive PR creation can look up `/user` during repository
+selection, which falls outside the repository-scoped Rules. Give `gh pr create`
+an explicit title and body or use `--fill`.
+
+```bash
+"$JETTY" vm exec <vm-name> -- bash -lc 'gh config set prompt disabled && test "$(gh config get prompt)" = disabled'
+```
+
 Verify both the allowed and unmatched paths — **note the changed semantics
 from the old gh-proxy**: an unmatched path is no longer a proxy-generated
 `403`, it now passes through untouched to the real upstream
