@@ -161,8 +161,7 @@ Implemented as a `mitmproxy` addon (`proxy_addon.py`) running under `mitmdump`,
 Python/aiohttp/SQLite stack chosen in #4 over a Go implementation.
 
 **Transport (`deploy/jetty-lxd`, `deploy/gateway/`, `tunnel.py`):** replaces the
-earlier host-iptables DNAT and its setcap'd helper. Validated by
-`prototype-incus-gateway/` and checked end to end by
+earlier host-iptables DNAT and its setcap'd helper. The transport is checked end to end by
 `tests/e2e/lxd-gateway-checks.sh`.
 
 ```
